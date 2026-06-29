@@ -14,9 +14,14 @@ if DATABASE_URL is None:
 engine = create_engine(DATABASE_URL, echo=True)
 
 SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine,
-)
 
+    autocommit=False,
+
+    autoflush=False,
+
+    expire_on_commit=False,
+
+    bind=engine,
+
+)
 Base = declarative_base()

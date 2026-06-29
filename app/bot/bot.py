@@ -24,9 +24,41 @@ dp = Dispatcher()
 lessons = get_all_lessons()
 
 
+def get_user_from_telegram(telegram_user):
+    return get_or_create_user(
+        telegram_id=telegram_user.id,
+        first_name=telegram_user.first_name,
+        last_name=telegram_user.last_name,
+        username=telegram_user.username,
+    )
+
+
+def build_progress_bar(current_lesson: int, total_lessons: int) -> str:
+    completed = max(current_lesson - 1, 0)
+    filled = min(completed, total_lessons)
+    empty = max(total_lessons - filled, 0)
+
+    return "🟩" * filled + "⬜" * empty
+
+
 def main_menu():
     kb = InlineKeyboardBuilder()
     kb.button(text="📚 Начать обучение", callback_data="start_learning")
+    kb.button(text="👤 Мой профиль", callback_data="profile")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def lesson_only_keyboard(lesson_position: int):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Урок пройден", callback_data=f"complete:{lesson_position}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def navigation_keyboard():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📚 Все уроки", callback_data="lessons")
     kb.button(text="👤 Мой профиль", callback_data="profile")
     kb.adjust(1)
     return kb.as_markup()
@@ -39,26 +71,6 @@ def lesson_keyboard(lesson_position: int):
     kb.adjust(1)
     return kb.as_markup()
 
-def lesson_only_keyboard(lesson_position: int):
-
-    kb = InlineKeyboardBuilder()
-
-    kb.button(text="✅ Урок пройден", callback_data=f"complete:{lesson_position}")
-
-    kb.adjust(1)
-
-    return kb.as_markup()
-def navigation_keyboard():
-
-    kb = InlineKeyboardBuilder()
-
-    kb.button(text="📚 Все уроки", callback_data="lessons")
-
-    kb.button(text="👤 Мой профиль", callback_data="profile")
-
-    kb.adjust(1)
-
-    return kb.as_markup()
 
 def lessons_list_keyboard(lessons, current_lesson: int):
     kb = InlineKeyboardBuilder()
@@ -91,13 +103,29 @@ async def safe_edit(callback: CallbackQuery, text: str, reply_markup=None):
             raise
 
 
+async def send_lesson(callback: CallbackQuery, lesson):
+    if callback.message is None:
+        return
+
+    await callback.message.answer(
+        f"🎥 Видео урока {lesson.position}\n\n"
+        f"📚 {lesson.title}\n\n"
+        "Здесь будет видеоурок и материалы.",
+        reply_markup=lesson_only_keyboard(lesson.position),
+    )
+
+    await callback.message.answer(
+        "Выберите дальнейшее действие:",
+        reply_markup=navigation_keyboard(),
+    )
+
+
 @dp.message(CommandStart())
 async def start(message: Message):
     if message.from_user is None:
         return
 
-    user_id = message.from_user.id
-    get_or_create_user(user_id)
+    get_user_from_telegram(message.from_user)
 
     await message.answer(
         "👋 Добро пожаловать!\n\n"
@@ -108,8 +136,7 @@ async def start(message: Message):
 
 @dp.callback_query(F.data == "start_learning")
 async def start_learning(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    user = get_or_create_user(user_id)
+    user = get_user_from_telegram(callback.from_user)
     current_lesson = user.current_lesson
 
     lesson = lessons[current_lesson - 1]
@@ -118,8 +145,7 @@ async def start_learning(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "lessons")
 async def show_lessons(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    user = get_or_create_user(user_id)
+    user = get_user_from_telegram(callback.from_user)
     current_lesson = user.current_lesson
 
     await safe_edit(
@@ -131,8 +157,7 @@ async def show_lessons(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("open_lesson:"))
 async def open_lesson(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    user = get_or_create_user(user_id)
+    user = get_user_from_telegram(callback.from_user)
     current_lesson = user.current_lesson
 
     if callback.data is None:
@@ -148,7 +173,6 @@ async def open_lesson(callback: CallbackQuery):
         return
 
     lesson = lessons[lesson_position - 1]
-
     await send_lesson(callback, lesson)
 
 
@@ -162,14 +186,12 @@ async def locked_lesson(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("complete:"))
 async def complete_lesson(callback: CallbackQuery):
-    user_id = callback.from_user.id
-
     if callback.data is None:
         return
 
-    lesson_position = int(callback.data.split(":")[1])
+    user = get_user_from_telegram(callback.from_user)
 
-    user = get_or_create_user(user_id)
+    lesson_position = int(callback.data.split(":")[1])
     current_lesson = user.current_lesson
 
     if lesson_position < current_lesson:
@@ -180,7 +202,7 @@ async def complete_lesson(callback: CallbackQuery):
         return
 
     if lesson_position == current_lesson and current_lesson < len(lessons):
-        update_current_lesson(user_id, current_lesson + 1)
+        update_current_lesson(user.telegram_id, current_lesson + 1)
         next_lesson = lessons[current_lesson]
 
         await callback.message.answer(
@@ -204,34 +226,49 @@ async def complete_lesson(callback: CallbackQuery):
         show_alert=True,
     )
 
+
 @dp.callback_query(F.data == "profile")
 async def profile(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    user = get_or_create_user(user_id)
-    current_lesson = user.current_lesson
+    user = get_user_from_telegram(callback.from_user)
+
+    total_lessons = len(lessons)
+    completed_lessons = max(user.current_lesson - 1, 0)
+    progress_percent = int((completed_lessons / total_lessons) * 100) if total_lessons else 0
+    progress_bar = build_progress_bar(user.current_lesson, total_lessons)
+
+    full_name = " ".join(
+        part for part in [user.first_name, user.last_name] if part
+    )
+
+    username = f"@{user.username}" if user.username else "Username не указан"
 
     await safe_edit(
         callback,
-        f"👤 Профиль\n\n"
-        f"Ваш текущий урок: {current_lesson}\n"
-        f"Курс: Монтаж гипсокартона с нуля",
+        f"👤 Особистий кабінет\n\n"
+        f"Вітаємо, {user.first_name or 'учню'} 👋\n"
+        f"{username}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🏆 Ваш прогрес\n\n"
+        f"📚 Придбано курсів: 1\n"
+        f"🎓 Завершено уроків: {completed_lessons}\n"
+        f"⭐ Загальний прогрес: {progress_percent}%\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📦 КУРС 1\n\n"
+        f"Монтаж гіпсокартону з нуля\n\n"
+        f"{progress_bar} {progress_percent}%\n\n"
+        f"✔ {completed_lessons} із {total_lessons} уроків\n"
+        f"▶ Поточний урок: {min(user.current_lesson, total_lessons)}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🔒 КУРС 2\n\n"
+        f"У розробці\n"
+        f"🚧 Незабаром\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🔒 КУРС 3\n\n"
+        f"У розробці\n"
+        f"🚧 Незабаром",
         reply_markup=main_menu(),
     )
-async def send_lesson(callback: CallbackQuery, lesson):
-    if callback.message is None:
-        return
 
-    await callback.message.answer(
-        f"🎥 Видео урока {lesson.position}\n\n"
-        f"📚 {lesson.title}\n\n"
-        "Здесь будет видеоурок и материалы.",
-        reply_markup=lesson_only_keyboard(lesson.position),
-    )
-
-    await callback.message.answer(
-        "Выберите дальнейшее действие:",
-        reply_markup=navigation_keyboard(),
-    )
 
 async def main():
     await dp.start_polling(bot)
