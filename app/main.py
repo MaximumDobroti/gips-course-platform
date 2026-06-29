@@ -1,6 +1,11 @@
 from fastapi import FastAPI
 
+import app.models.lesson
+
 import app.models.user
+
+
+import app.models.course
 
 from app.database.database import Base, engine
 
