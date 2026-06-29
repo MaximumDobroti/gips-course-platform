@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-
+import app.models.purchase
 import app.models.lesson
 
 import app.models.user

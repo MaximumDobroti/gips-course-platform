@@ -1,6 +1,7 @@
 import asyncio
 import os
 
+from app.bot.services.purchase_service import user_has_active_course
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
@@ -133,15 +134,29 @@ async def start(message: Message):
         reply_markup=main_menu(),
     )
 
-
 @dp.callback_query(F.data == "start_learning")
 async def start_learning(callback: CallbackQuery):
-    user = get_user_from_telegram(callback.from_user)
-    current_lesson = user.current_lesson
+    user_id = callback.from_user.id
 
-    lesson = lessons[current_lesson - 1]
+    user = get_or_create_user(
+        telegram_id=user_id,
+        first_name=callback.from_user.first_name,
+        last_name=callback.from_user.last_name,
+        username=callback.from_user.username,
+    )
+
+    if not user_has_active_course(user.id, 1):
+        await safe_edit(
+            callback,
+            "🔒 У вас пока нет доступа к этому курсу.\n\n"
+            "После оплаты курс станет доступен.",
+            reply_markup=main_menu(),
+        )
+        return
+
+    lesson = lessons[user.current_lesson - 1]
+
     await send_lesson(callback, lesson)
-
 
 @dp.callback_query(F.data == "lessons")
 async def show_lessons(callback: CallbackQuery):
