@@ -6,6 +6,7 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
+from aiogram.exceptions import TelegramBadRequest
 
 load_dotenv()
 
@@ -118,13 +119,15 @@ async def profile(callback: CallbackQuery):
     user_id = callback.from_user.id
     current_lesson = users_progress.get(user_id, 1)
 
-    await callback.message.edit_text(
-        f"👤 Профиль\n\n"
-        f"Ваш текущий урок: {current_lesson}\n"
-        f"Курс: Монтаж гипсокартона с нуля",
-        reply_markup=main_menu()
-    )
-
+    try:
+        await callback.message.edit_text(
+            f"👤 Профиль\n\n"
+            f"Ваш текущий урок: {current_lesson}\n"
+            f"Курс: Монтаж гипсокартона с нуля",
+            reply_markup=main_menu()
+        )
+    except TelegramBadRequest:
+        await callback.answer("Вы уже в профиле")
 
 async def main():
     await dp.start_polling(bot)
