@@ -4,6 +4,8 @@ from typing import Any
 
 import app.models
 
+
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
@@ -19,6 +21,21 @@ from app.bot.services.lesson_service import (
     update_lesson_pdf,
     update_lesson_video,
 )
+
+from app.bot.services.announcement_service import (
+
+    create_announcement,
+
+    get_active_student_telegram_ids,
+
+    get_announcement,
+
+    get_published_announcements,
+
+    publish_announcement,
+
+)
+
 from app.bot.services.purchase_service import user_has_active_course
 from app.bot.services.user_service import (
     get_or_create_user,
@@ -51,6 +68,14 @@ class AdminLessonEdit(StatesGroup):
     waiting_for_pdf = State()
     waiting_for_description = State()
 
+class AdminAnnouncementCreate(StatesGroup):
+
+    waiting_for_title = State()
+
+    waiting_for_text = State()
+
+    waiting_for_image = State()
+
 
 # =========================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -59,6 +84,61 @@ class AdminLessonEdit(StatesGroup):
 def refresh_lessons() -> None:
     global lessons
     lessons = get_all_lessons()
+
+def admin_news_keyboard():
+
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+
+        text="➕ Создать новость",
+
+        callback_data="admin_news_create",
+
+    )
+
+    keyboard.button(
+
+        text="📋 История новостей",
+
+        callback_data="admin_news_history",
+
+    )
+
+    keyboard.button(
+
+        text="⬅️ Назад",
+
+        callback_data="admin_panel",
+
+    )
+
+    keyboard.adjust(1)
+
+    return keyboard.as_markup()
+
+def announcement_confirmation_keyboard(announcement_id: int,):
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+
+        text="✅ Опубликовать",
+
+        callback_data=f"admin_news_publish:{announcement_id}",
+
+    )
+
+    keyboard.button(
+
+        text="❌ Отмена",
+
+        callback_data=f"admin_news_cancel:{announcement_id}",
+
+    )
+
+    keyboard.adjust(1)
+
+    return keyboard.as_markup()
 
 
 def get_user_from_telegram(telegram_user: Any):
@@ -153,6 +233,10 @@ def main_menu(is_admin: bool = False):
     keyboard = InlineKeyboardBuilder()
 
     keyboard.button(
+        text="📢 Новости",
+        callback_data="student_news",
+    )
+    keyboard.button(
         text="📚 Начать обучение",
         callback_data="start_learning",
     )
@@ -186,6 +270,31 @@ def lesson_only_keyboard(lesson_position: int):
 
     keyboard.adjust(1)
     return keyboard.as_markup()
+
+def announcement_image_keyboard():
+
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+
+        text="⏭ Без изображения",
+
+        callback_data="admin_news_without_image",
+
+    )
+
+    keyboard.button(
+
+        text="❌ Отмена",
+
+        callback_data="admin_news",
+
+    )
+
+    keyboard.adjust(1)
+
+    return keyboard.as_markup()
+
 
 
 def navigation_keyboard():
@@ -445,6 +554,64 @@ async def start(message: Message):
         reply_markup=main_menu(
             is_admin=user.is_admin,
         ),
+    )
+
+@dp.callback_query(F.data == "student_news")
+
+async def student_news(callback: CallbackQuery):
+
+    user = get_user_from_telegram(
+
+        callback.from_user
+
+    )
+
+    announcements = get_published_announcements()
+
+    if not announcements:
+
+        await safe_edit(
+
+            callback,
+
+            "📢 Новостей пока нет.",
+
+            reply_markup=main_menu(
+
+                is_admin=user.is_admin
+
+            ),
+
+        )
+
+        return
+
+    parts = ["📢 Последние новости\n"]
+
+    for announcement in announcements[:5]:
+
+        parts.append(
+
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+
+            f"📌 {announcement.title}\n\n"
+
+            f"{announcement.text}"
+
+        )
+
+    await safe_edit(
+
+        callback,
+
+        "\n\n".join(parts),
+
+        reply_markup=main_menu(
+
+            is_admin=user.is_admin
+
+        ),
+
     )
 
 
@@ -1199,16 +1366,429 @@ async def admin_lesson(callback: CallbackQuery):
 # =========================================================
 
 @dp.callback_query(F.data == "admin_news")
+
 async def admin_news(callback: CallbackQuery):
+
     user = await check_admin(callback)
 
     if user is None:
+
         return
 
-    await callback.answer(
-        "Раздел новостей добавим следующим этапом.",
-        show_alert=True,
+    await safe_edit(
+
+        callback,
+
+        "📢 Управление новостями\n\n"
+
+        "Здесь можно создать объявление "
+
+        "и отправить его активным ученикам.",
+
+        reply_markup=admin_news_keyboard(),
+
     )
+
+@dp.callback_query(F.data == "admin_news_create")
+
+async def admin_news_create(
+
+    callback: CallbackQuery,
+
+    state: FSMContext,
+
+):
+
+    user = await check_admin(callback)
+
+    if user is None or callback.message is None:
+
+        return
+
+    await state.clear()
+
+    await state.set_state(
+
+        AdminAnnouncementCreate.waiting_for_title
+
+    )
+
+    await callback.message.answer(
+
+        "📝 Введите заголовок новости."
+
+    )
+
+
+@dp.message(
+
+    AdminAnnouncementCreate.waiting_for_title,
+
+    F.text,
+
+)
+
+async def admin_news_title(
+
+    message: Message,
+
+    state: FSMContext,
+
+):
+
+    if message.text is None:
+
+        return
+
+    title = message.text.strip()
+
+    if len(title) < 3:
+
+        await message.answer(
+
+            "Заголовок слишком короткий."
+
+        )
+
+        return
+
+    await state.update_data(title=title)
+
+    await state.set_state(
+
+        AdminAnnouncementCreate.waiting_for_text
+
+    )
+
+    await message.answer(
+
+        "📄 Теперь отправьте текст новости."
+
+    )
+
+@dp.message(
+    AdminAnnouncementCreate.waiting_for_text,
+    F.text,
+)
+async def admin_news_text(
+    message: Message,
+    state: FSMContext,
+):
+    if message.text is None:
+        return
+
+    text = message.text.strip()
+
+    if len(text) < 5:
+        await message.answer(
+            "Текст новости слишком короткий."
+        )
+        return
+
+    await state.update_data(text=text)
+
+    await state.set_state(
+        AdminAnnouncementCreate.waiting_for_image
+    )
+
+    await message.answer(
+        "🖼 Отправьте одну картинку для новости.\n\n"
+        "Или опубликуйте новость без изображения.",
+        reply_markup=announcement_image_keyboard(),
+    )
+
+
+@dp.message(
+
+    AdminAnnouncementCreate.waiting_for_image,
+
+    F.photo,
+
+)
+
+async def admin_news_image(
+
+    message: Message,
+
+    state: FSMContext,
+
+):
+
+    if not message.photo:
+
+        return
+
+    data = await state.get_data()
+
+    title = data.get("title")
+
+    text = data.get("text")
+
+    if not title or not text:
+
+        await message.answer(
+
+            "Не удалось получить данные новости."
+
+        )
+
+        await state.clear()
+
+        return
+
+    image_file_id = message.photo[-1].file_id
+
+    announcement = create_announcement(
+
+        title=title,
+
+        text=text,
+
+        image_file_id=image_file_id,
+
+    )
+
+    await state.clear()
+
+    await message.answer_photo(
+
+        photo=image_file_id,
+
+        caption=(
+
+            f"📢 <b>Предпросмотр новости</b>\n\n"
+
+            f"<b>{announcement.title}</b>\n\n"
+
+            f"{announcement.text}"
+
+        ),
+
+        parse_mode="HTML",
+
+        reply_markup=announcement_confirmation_keyboard(
+
+            announcement.id
+
+        ),
+
+    )
+
+@dp.callback_query(
+    F.data == "admin_news_without_image"
+)
+async def admin_news_without_image(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    user = await check_admin(callback)
+
+    if user is None or callback.message is None:
+        return
+
+    data = await state.get_data()
+
+    title = data.get("title")
+    text = data.get("text")
+
+    if not title or not text:
+        await callback.answer(
+            "Не удалось получить данные новости.",
+            show_alert=True,
+        )
+        await state.clear()
+        return
+
+    announcement = create_announcement(
+        title=title,
+        text=text,
+        image_file_id=None,
+    )
+
+    await state.clear()
+
+    await callback.message.answer(
+        f"📢 <b>Предпросмотр новости</b>\n\n"
+        f"<b>{announcement.title}</b>\n\n"
+        f"{announcement.text}",
+        parse_mode="HTML",
+        reply_markup=announcement_confirmation_keyboard(
+            announcement.id
+        ),
+    )
+
+@dp.message(
+    AdminAnnouncementCreate.waiting_for_image
+)
+async def wrong_announcement_image(
+    message: Message,
+):
+    await message.answer(
+        "Отправьте изображение как фотографию "
+        "или нажмите «Без изображения»."
+    )
+
+
+
+
+@dp.callback_query(
+    F.data.startswith("admin_news_publish:")
+)
+async def admin_news_publish(
+    callback: CallbackQuery,
+):
+    user = await check_admin(callback)
+
+    if (
+        user is None
+        or callback.data is None
+        or callback.message is None
+    ):
+        return
+
+    announcement_id = int(
+        callback.data.split(":")[1]
+    )
+
+    announcement = get_announcement(
+        announcement_id
+    )
+
+    if announcement is None:
+        await callback.answer(
+            "Новость не найдена.",
+            show_alert=True,
+        )
+        return
+
+    published = publish_announcement(
+        announcement_id
+    )
+
+    if not published:
+        await callback.answer(
+            "Не удалось опубликовать новость.",
+            show_alert=True,
+        )
+        return
+
+    telegram_ids = get_active_student_telegram_ids(
+        course_id=COURSE_ID
+    )
+
+    delivered = 0
+    failed = 0
+
+    for telegram_id in telegram_ids:
+        try:
+            if announcement.image_file_id:
+                await bot.send_photo(
+                    chat_id=telegram_id,
+                    photo=announcement.image_file_id,
+                    caption=(
+                        f"📢 <b>{announcement.title}</b>\n\n"
+                        f"{announcement.text}"
+                    ),
+                    parse_mode="HTML",
+                    protect_content=True,
+                )
+            else:
+                await bot.send_message(
+                    chat_id=telegram_id,
+                    text=(
+                        f"📢 <b>{announcement.title}</b>\n\n"
+                        f"{announcement.text}"
+                    ),
+                    parse_mode="HTML",
+                    protect_content=True,
+                )
+
+            delivered += 1
+
+        except Exception:
+            failed += 1
+
+    await callback.message.answer(
+        "✅ Новость опубликована.\n\n"
+        f"Доставлено: {delivered}\n"
+        f"Ошибок: {failed}"
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query(
+
+    F.data.startswith("admin_news_cancel:")
+
+)
+
+async def admin_news_cancel(
+
+    callback: CallbackQuery,
+
+):
+
+    user = await check_admin(callback)
+
+    if user is None:
+
+        return
+
+    await safe_edit(
+
+        callback,
+
+        "❌ Публикация отменена.",
+
+        reply_markup=admin_news_keyboard(),
+
+    )
+
+@dp.callback_query(F.data == "admin_news_history")
+
+async def admin_news_history(
+
+    callback: CallbackQuery,
+
+):
+
+    user = await check_admin(callback)
+
+    if user is None:
+
+        return
+
+    announcements = get_published_announcements()
+
+    if not announcements:
+
+        text = "📋 Опубликованных новостей пока нет."
+
+    else:
+
+        parts = ["📋 История новостей\n"]
+
+        for announcement in announcements[:10]:
+
+            parts.append(
+
+                f"• {announcement.title}"
+
+            )
+
+        text = "\n".join(parts)
+
+    await safe_edit(
+
+        callback,
+
+        text,
+
+        reply_markup=admin_news_keyboard(),
+
+    )
+
 
 
 @dp.callback_query(F.data == "admin_students")

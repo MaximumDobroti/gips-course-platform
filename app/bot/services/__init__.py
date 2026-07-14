@@ -6,6 +6,8 @@ from app.models.purchase import Purchase
 
 from app.models.user import User
 
+from app.models.announcement import Announcement
+
 __all__ = [
 
     "Course",
@@ -15,5 +17,6 @@ __all__ = [
     "Purchase",
 
     "User",
+    "Announcement",
 
 ]

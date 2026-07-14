@@ -3,6 +3,7 @@ import app.models.purchase
 import app.models.lesson
 
 import app.models.user
+import app.models.announcement
 
 
 import app.models.course
