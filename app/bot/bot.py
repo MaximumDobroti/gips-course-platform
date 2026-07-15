@@ -1,11 +1,8 @@
 import asyncio
+import html
 import os
 from typing import Any
-
 import app.models
-
-
-
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
@@ -14,130 +11,80 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
-
+from app.bot.services.announcement_service import (
+    create_announcement,
+    get_active_student_telegram_ids,
+    get_announcement,
+    get_published_announcements,
+    publish_announcement,
+)
+from app.bot.services.lesson_progress_service import (
+    get_completed_lesson_ids,
+    get_course_progress,
+    get_next_available_lesson,
+    is_lesson_available,
+    is_lesson_completed,
+    mark_lesson_completed,
+)
 from app.bot.services.lesson_service import (
     get_all_lessons,
     update_lesson_description,
     update_lesson_pdf,
     update_lesson_video,
 )
-
-from app.bot.services.announcement_service import (
-
-    create_announcement,
-
-    get_active_student_telegram_ids,
-
-    get_announcement,
-
-    get_published_announcements,
-
-    publish_announcement,
-
+from app.bot.services.purchase_service import (
+    get_purchased_courses_count,
+    user_has_active_course,
 )
-
-from app.bot.services.purchase_service import user_has_active_course
-from app.bot.services.user_service import (
-    get_or_create_user,
-    update_current_lesson,
-)
+from app.bot.services.user_service import get_or_create_user
 
 load_dotenv()
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
 if BOT_TOKEN is None:
     raise RuntimeError("BOT_TOKEN is not set in .env")
-
 COURSE_ID = 1
 COURSE_TITLE = "Монтаж гипсокартона с нуля"
 COURSE_PRICE = 750
-
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-
 lessons = get_all_lessons()
 
-
-# =========================================================
-# FSM-СОСТОЯНИЯ АДМИНИСТРАТОРА
-# =========================================================
 
 class AdminLessonEdit(StatesGroup):
     waiting_for_video = State()
     waiting_for_pdf = State()
     waiting_for_description = State()
 
+
 class AdminAnnouncementCreate(StatesGroup):
-
     waiting_for_title = State()
-
     waiting_for_text = State()
-
     waiting_for_image = State()
 
-
-# =========================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-# =========================================================
 
 def refresh_lessons() -> None:
     global lessons
     lessons = get_all_lessons()
 
+
 def admin_news_keyboard():
-
     keyboard = InlineKeyboardBuilder()
-
-    keyboard.button(
-
-        text="➕ Создать новость",
-
-        callback_data="admin_news_create",
-
-    )
-
-    keyboard.button(
-
-        text="📋 История новостей",
-
-        callback_data="admin_news_history",
-
-    )
-
-    keyboard.button(
-
-        text="⬅️ Назад",
-
-        callback_data="admin_panel",
-
-    )
-
+    keyboard.button(text="➕ Создать новость", callback_data="admin_news_create")
+    keyboard.button(text="📋 История новостей", callback_data="admin_news_history")
+    keyboard.button(text="⬅️ Назад", callback_data="admin_panel")
     keyboard.adjust(1)
-
     return keyboard.as_markup()
 
-def announcement_confirmation_keyboard(announcement_id: int,):
+
+def announcement_confirmation_keyboard(announcement_id: int):
     keyboard = InlineKeyboardBuilder()
-
     keyboard.button(
-
-        text="✅ Опубликовать",
-
-        callback_data=f"admin_news_publish:{announcement_id}",
-
+        text="✅ Опубликовать", callback_data=f"admin_news_publish:{announcement_id}"
     )
-
     keyboard.button(
-
-        text="❌ Отмена",
-
-        callback_data=f"admin_news_cancel:{announcement_id}",
-
+        text="❌ Отмена", callback_data=f"admin_news_cancel:{announcement_id}"
     )
-
     keyboard.adjust(1)
-
     return keyboard.as_markup()
 
 
@@ -151,47 +98,24 @@ def get_user_from_telegram(telegram_user: Any):
 
 
 def get_lesson_by_id(lesson_id: int):
-    return next(
-        (lesson for lesson in lessons if lesson.id == lesson_id),
-        None,
-    )
+    return next((lesson for lesson in lessons if lesson.id == lesson_id), None)
 
 
 def get_lesson_by_position(position: int):
-    return next(
-        (lesson for lesson in lessons if lesson.position == position),
-        None,
-    )
+    return next((lesson for lesson in lessons if lesson.position == position), None)
 
 
-def build_progress_bar(
-    current_lesson: int,
-    total_lessons: int,
-) -> str:
-    completed = min(
-        max(current_lesson - 1, 0),
-        total_lessons,
-    )
-
-    filled = completed
+def build_progress_bar(completed_lessons: int, total_lessons: int) -> str:
+    filled = min(max(completed_lessons, 0), total_lessons)
     empty = max(total_lessons - filled, 0)
-
     return "🟩" * filled + "⬜" * empty
 
 
-async def safe_edit(
-    callback: CallbackQuery,
-    text: str,
-    reply_markup=None,
-) -> None:
+async def safe_edit(callback: CallbackQuery, text: str, reply_markup=None) -> None:
     if callback.message is None:
         return
-
     try:
-        await callback.message.edit_text(
-            text,
-            reply_markup=reply_markup,
-        )
+        await callback.message.edit_text(text, reply_markup=reply_markup)
     except TelegramBadRequest as error:
         if "message is not modified" in str(error):
             await callback.answer("Уже открыто")
@@ -201,269 +125,197 @@ async def safe_edit(
 
 async def check_admin(callback: CallbackQuery):
     user = get_user_from_telegram(callback.from_user)
-
     if not user.is_admin:
-        await callback.answer(
-            "⛔ У вас нет доступа к админ-панели.",
-            show_alert=True,
-        )
+        await callback.answer("⛔ У вас нет доступа к админ-панели.", show_alert=True)
         return None
-
     return user
 
 
 async def check_course_access(callback: CallbackQuery):
     user = get_user_from_telegram(callback.from_user)
-
     if not user_has_active_course(user.id, COURSE_ID):
         await callback.answer(
-            "🔒 У вас нет активного доступа к этому курсу.",
-            show_alert=True,
+            "🔒 У вас нет активного доступа к этому курсу.", show_alert=True
         )
         return None
-
     return user
 
 
-# =========================================================
-# КЛАВИАТУРЫ УЧЕНИКА
-# =========================================================
+async def show_profile(
+    callback: CallbackQuery | None = None, message: Message | None = None
+) -> None:
+    telegram_user = callback.from_user if callback is not None else message.from_user
+    if telegram_user is None:
+        return
+    user = get_user_from_telegram(telegram_user)
+    purchased_courses_count = get_purchased_courses_count(user_id=user.id)
+    has_course_access = user_has_active_course(user_id=user.id, course_id=COURSE_ID)
+    username_line = f"@{user.username}\n" if user.username else ""
+    if has_course_access:
+        progress = get_course_progress(user_id=user.id, course_id=COURSE_ID)
+        completed_lessons = progress["completed"]
+        total_lessons = progress["total"]
+        progress_percent = progress["percent"]
+        progress_bar = build_progress_bar(completed_lessons, total_lessons)
+        next_lesson = get_next_available_lesson(user_id=user.id, course_id=COURSE_ID)
+        if next_lesson is None:
+            current_status = "✅ Курс завершено"
+        else:
+            current_status = f"▶ Поточний урок: {next_lesson.position}"
+        course_block = f"📦 КУРС 1\n\n{COURSE_TITLE}\n\n{progress_bar} {progress_percent}%\n\n✔ {completed_lessons} із {total_lessons} уроків\n{current_status}\n"
+    else:
+        course_block = f"🔒 КУРС 1\n\n{COURSE_TITLE}\n\n💰 Вартість: {COURSE_PRICE} грн\nКурс не придбано\n"
+    text = f"👤 Особистий кабінет\n\nВітаємо, {user.first_name or 'учню'} 👋\n{username_line}\n━━━━━━━━━━━━━━━━━━━━━━\n\n📚 Придбано курсів: {purchased_courses_count}\n\n━━━━━━━━━━━━━━━━━━━━━━\n\n{course_block}\n━━━━━━━━━━━━━━━━━━━━━━\n\n🔒 КУРС 2\n\nУ розробці\n🚧 Незабаром\n\n━━━━━━━━━━━━━━━━━━━━━━\n\n🔒 КУРС 3\n\nУ розробці\n🚧 Незабаром"
+    keyboard = profile_courses_keyboard(
+        has_course_access=has_course_access, is_admin=user.is_admin
+    )
+    if callback is not None:
+        await safe_edit(callback, text, reply_markup=keyboard)
+    elif message is not None:
+        await message.answer(text, reply_markup=keyboard)
+
 
 def main_menu(is_admin: bool = False):
     keyboard = InlineKeyboardBuilder()
-
-    keyboard.button(
-        text="📢 Новости",
-        callback_data="student_news",
-    )
-    keyboard.button(
-        text="📚 Начать обучение",
-        callback_data="start_learning",
-    )
-    keyboard.button(
-        text="👤 Мой профиль",
-        callback_data="profile",
-    )
-
+    keyboard.button(text="📢 Новости", callback_data="student_news")
+    keyboard.button(text="📚 Начать обучение", callback_data="start_learning")
+    keyboard.button(text="👤 Мой профиль", callback_data="profile")
     if is_admin:
-        keyboard.button(
-            text="👨‍💼 Админ-панель",
-            callback_data="admin_panel",
-        )
+        keyboard.button(text="👨\u200d💼 Админ-панель", callback_data="admin_panel")
+    keyboard.adjust(1)
+    return keyboard.as_markup()
 
+
+def profile_courses_keyboard(has_course_access: bool, is_admin: bool = False):
+    keyboard = InlineKeyboardBuilder()
+    if has_course_access:
+        keyboard.button(text="▶ Почати навчання", callback_data="start_learning")
+        keyboard.button(text="📚 Усі уроки", callback_data="lessons")
+    else:
+        keyboard.button(
+            text="💳 Придбати курс 1", callback_data=f"buy_course:{COURSE_ID}"
+        )
+    keyboard.button(text="📢 Новини", callback_data="student_news")
+    if is_admin:
+        keyboard.button(text="👨\u200d💼 Адмін-панель", callback_data="admin_panel")
     keyboard.adjust(1)
     return keyboard.as_markup()
 
 
 def lesson_only_keyboard(lesson_position: int):
     keyboard = InlineKeyboardBuilder()
-
     if lesson_position < len(lessons):
         button_text = "➡️ Перейти до наступного уроку"
     else:
         button_text = "🏁 Завершити курс"
-
-    keyboard.button(
-        text=button_text,
-        callback_data=f"complete:{lesson_position}",
-    )
-
+    keyboard.button(text=button_text, callback_data=f"complete:{lesson_position}")
     keyboard.adjust(1)
     return keyboard.as_markup()
+
 
 def announcement_image_keyboard():
-
     keyboard = InlineKeyboardBuilder()
-
-    keyboard.button(
-
-        text="⏭ Без изображения",
-
-        callback_data="admin_news_without_image",
-
-    )
-
-    keyboard.button(
-
-        text="❌ Отмена",
-
-        callback_data="admin_news",
-
-    )
-
+    keyboard.button(text="⏭ Без изображения", callback_data="admin_news_without_image")
+    keyboard.button(text="❌ Отмена", callback_data="admin_news")
     keyboard.adjust(1)
-
     return keyboard.as_markup()
-
 
 
 def navigation_keyboard():
     keyboard = InlineKeyboardBuilder()
-
-    keyboard.button(
-        text="📚 Все уроки",
-        callback_data="lessons",
-    )
-    keyboard.button(
-        text="👤 Мой профиль",
-        callback_data="profile",
-    )
-
+    keyboard.button(text="📚 Все уроки", callback_data="lessons")
+    keyboard.button(text="👤 Мой профиль", callback_data="profile")
     keyboard.adjust(1)
     return keyboard.as_markup()
 
 
 def lesson_keyboard(lesson_position: int):
     keyboard = InlineKeyboardBuilder()
-
     if lesson_position < len(lessons):
         button_text = "➡️ Перейти до наступного уроку"
     else:
         button_text = "🏁 Завершити курс"
-
-    keyboard.button(
-        text=button_text,
-        callback_data=f"complete:{lesson_position}",
-    )
-    keyboard.button(
-        text="📚 Все уроки",
-        callback_data="lessons",
-    )
-
+    keyboard.button(text=button_text, callback_data=f"complete:{lesson_position}")
+    keyboard.button(text="📚 Все уроки", callback_data="lessons")
     keyboard.adjust(1)
     return keyboard.as_markup()
 
 
 def lessons_list_keyboard(
-    course_lessons,
-    current_lesson: int,
+    course_lessons, completed_lesson_ids: set[int], available_lesson_id: int | None
 ):
     keyboard = InlineKeyboardBuilder()
-
     for lesson in course_lessons:
-        if lesson.position < current_lesson:
+        if lesson.id in completed_lesson_ids:
             text = f"✅ {lesson.title}"
             callback_data = f"open_lesson:{lesson.position}"
-
-        elif lesson.position == current_lesson:
+        elif lesson.id == available_lesson_id:
             text = f"▶️ {lesson.title}"
             callback_data = f"open_lesson:{lesson.position}"
-
         else:
             text = f"🔒 {lesson.title}"
             callback_data = f"locked_lesson:{lesson.position}"
-
-        keyboard.button(
-            text=text,
-            callback_data=callback_data,
-        )
-
-    keyboard.button(
-        text="👤 Мой профиль",
-        callback_data="profile",
-    )
-
+        keyboard.button(text=text, callback_data=callback_data)
+    keyboard.button(text="👤 Мой профиль", callback_data="profile")
     keyboard.adjust(1)
     return keyboard.as_markup()
 
 
-# =========================================================
-# КЛАВИАТУРЫ АДМИНИСТРАТОРА
-# =========================================================
-
 def admin_menu():
     keyboard = InlineKeyboardBuilder()
-
-    keyboard.button(
-        text="📚 Курсы",
-        callback_data="admin_courses",
-    )
-    keyboard.button(
-        text="📢 Новости",
-        callback_data="admin_news",
-    )
-    keyboard.button(
-        text="👥 Ученики",
-        callback_data="admin_students",
-    )
-    keyboard.button(
-        text="📊 Статистика",
-        callback_data="admin_statistics",
-    )
-    keyboard.button(
-        text="⬅️ Личный кабинет",
-        callback_data="profile",
-    )
-
+    keyboard.button(text="📚 Курсы", callback_data="admin_courses")
+    keyboard.button(text="📢 Новости", callback_data="admin_news")
+    keyboard.button(text="👥 Ученики", callback_data="admin_students")
+    keyboard.button(text="📊 Статистика", callback_data="admin_statistics")
+    keyboard.button(text="⬅️ Личный кабинет", callback_data="profile")
     keyboard.adjust(1)
     return keyboard.as_markup()
 
 
 def admin_courses_keyboard():
     keyboard = InlineKeyboardBuilder()
-
     keyboard.button(
-        text="🎓 Курс 1. Монтаж гипсокартона",
-        callback_data=f"admin_course:{COURSE_ID}",
+        text="🎓 Курс 1. Монтаж гипсокартона", callback_data=f"admin_course:{COURSE_ID}"
     )
-    keyboard.button(
-        text="⬅️ Назад",
-        callback_data="admin_panel",
-    )
-
+    keyboard.button(text="⬅️ Назад", callback_data="admin_panel")
     keyboard.adjust(1)
     return keyboard.as_markup()
 
 
 def admin_course_keyboard(course_id: int):
     keyboard = InlineKeyboardBuilder()
-
-    keyboard.button(
-        text="📖 Уроки",
-        callback_data=f"admin_course_lessons:{course_id}",
-    )
-    keyboard.button(
-        text="⬅️ К курсам",
-        callback_data="admin_courses",
-    )
-
+    keyboard.button(text="📖 Уроки", callback_data=f"admin_course_lessons:{course_id}")
+    keyboard.button(text="⬅️ К курсам", callback_data="admin_courses")
     keyboard.adjust(1)
     return keyboard.as_markup()
 
 
-def admin_lessons_keyboard(
-    course_lessons,
-    course_id: int,
-):
+def buy_course_keyboard(course_id: int):
     keyboard = InlineKeyboardBuilder()
+    keyboard.button(
+        text="💳 Перейти до оплати", callback_data=f"create_payment:{course_id}"
+    )
+    keyboard.button(text="⬅️ До особистого кабінету", callback_data="profile")
+    keyboard.adjust(1)
+    return keyboard.as_markup()
 
+
+def admin_lessons_keyboard(course_lessons, course_id: int):
+    keyboard = InlineKeyboardBuilder()
     for lesson in course_lessons:
         video_icon = "🎥" if lesson.video_file_id else "⚪️"
         pdf_icon = "📄" if lesson.pdf_file_id else "⚪️"
-
         keyboard.button(
-            text=(
-                f"{lesson.position}. {lesson.title} "
-                f"{video_icon}{pdf_icon}"
-            ),
+            text=f"{lesson.position}. {lesson.title} {video_icon}{pdf_icon}",
             callback_data=f"admin_lesson:{lesson.id}",
         )
-
-    keyboard.button(
-        text="⬅️ Назад",
-        callback_data=f"admin_course:{course_id}",
-    )
-
+    keyboard.button(text="⬅️ Назад", callback_data=f"admin_course:{course_id}")
     keyboard.adjust(1)
     return keyboard.as_markup()
 
 
-def admin_lesson_keyboard(
-    lesson_id: int,
-    course_id: int,
-):
+def admin_lesson_keyboard(lesson_id: int, course_id: int):
     keyboard = InlineKeyboardBuilder()
-
     keyboard.button(
         text="🎥 Загрузить или заменить видео",
         callback_data=f"admin_lesson_video:{lesson_id}",
@@ -481,1345 +333,615 @@ def admin_lesson_keyboard(
         callback_data=f"admin_lesson_preview:{lesson_id}",
     )
     keyboard.button(
-        text="⬅️ К урокам",
-        callback_data=f"admin_course_lessons:{course_id}",
+        text="⬅️ К урокам", callback_data=f"admin_course_lessons:{course_id}"
     )
-
     keyboard.adjust(1)
     return keyboard.as_markup()
 
 
-# =========================================================
-# ОТПРАВКА УРОКА УЧЕНИКУ
-# =========================================================
-
-async def send_lesson(
-    callback: CallbackQuery,
-    lesson,
-) -> None:
+async def send_lesson(callback: CallbackQuery, lesson) -> None:
     if callback.message is None:
         return
-
-    caption = (
-        f"🎥 {lesson.title}\n\n"
-        f"{lesson.description or 'Описание урока пока не добавлено.'}"
-    )
-
+    caption = f"🎥 {lesson.title}\n\n{lesson.description or 'Описание урока пока не добавлено.'}"
     if lesson.video_file_id:
         await callback.message.answer_video(
             video=lesson.video_file_id,
             caption=caption,
             protect_content=True,
-            reply_markup=lesson_only_keyboard(
-                lesson.position,
-            ),
+            reply_markup=lesson_only_keyboard(lesson.position),
         )
     else:
         await callback.message.answer(
-            f"{caption}\n\n"
-            "⚠️ Видео пока не загружено.",
+            f"{caption}\n\n⚠️ Видео пока не загружено.",
             protect_content=True,
-            reply_markup=lesson_only_keyboard(
-                lesson.position,
-            ),
+            reply_markup=lesson_only_keyboard(lesson.position),
         )
-
     if lesson.pdf_file_id:
         await callback.message.answer_document(
             document=lesson.pdf_file_id,
             caption=f"📄 Материалы к уроку {lesson.position}",
             protect_content=True,
         )
-
     await callback.message.answer(
-        "Выберите дальнейшее действие:",
-        reply_markup=navigation_keyboard(),
+        "Выберите дальнейшее действие:", reply_markup=navigation_keyboard()
     )
 
-
-# =========================================================
-# ОБРАБОТЧИКИ УЧЕНИКА
-# =========================================================
 
 @dp.message(CommandStart())
 async def start(message: Message):
-    if message.from_user is None:
-        return
+    await show_profile(message=message)
 
-    user = get_user_from_telegram(message.from_user)
-
-    await message.answer(
-        "👋 Добро пожаловать!\n\n"
-        f"Курс: «{COURSE_TITLE}»",
-        reply_markup=main_menu(
-            is_admin=user.is_admin,
-        ),
-    )
 
 @dp.callback_query(F.data == "student_news")
-
 async def student_news(callback: CallbackQuery):
-
-    user = get_user_from_telegram(
-
-        callback.from_user
-
-    )
-
-    announcements = get_published_announcements()
-
-    if not announcements:
-
-        await safe_edit(
-
-            callback,
-
-            "📢 Новостей пока нет.",
-
-            reply_markup=main_menu(
-
-                is_admin=user.is_admin
-
-            ),
-
-        )
-
+    user = get_user_from_telegram(callback.from_user)
+    if callback.message is None:
         return
-
-    parts = ["📢 Последние новости\n"]
-
-    for announcement in announcements[:5]:
-
-        parts.append(
-
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-
-            f"📌 {announcement.title}\n\n"
-
-            f"{announcement.text}"
-
+    announcements = get_published_announcements()
+    if not announcements:
+        await safe_edit(
+            callback,
+            "📢 Новостей пока нет.",
+            reply_markup=main_menu(is_admin=user.is_admin),
         )
-
-    await safe_edit(
-
-        callback,
-
-        "\n\n".join(parts),
-
-        reply_markup=main_menu(
-
-            is_admin=user.is_admin
-
-        ),
-
+        return
+    await safe_edit(callback, "📢 Последние новости", reply_markup=None)
+    for announcement in announcements[:5]:
+        news_text = f"📌 <b>{html.escape(announcement.title)}</b>\n\n{html.escape(announcement.text)}"
+        if announcement.image_file_id:
+            await callback.message.answer_photo(
+                photo=announcement.image_file_id,
+                caption=news_text,
+                parse_mode="HTML",
+                protect_content=True,
+            )
+        else:
+            await callback.message.answer(
+                news_text, parse_mode="HTML", protect_content=True
+            )
+    await callback.message.answer(
+        "Выберите дальнейшее действие:", reply_markup=main_menu(is_admin=user.is_admin)
     )
+    await callback.answer()
 
 
 @dp.callback_query(F.data == "start_learning")
 async def start_learning(callback: CallbackQuery):
     user = await check_course_access(callback)
-
     if user is None:
         return
-
-    lesson_position = min(
-        max(user.current_lesson, 1),
-        len(lessons),
-    )
-
-    lesson = get_lesson_by_position(lesson_position)
-
+    lesson = get_next_available_lesson(user_id=user.id, course_id=COURSE_ID)
     if lesson is None:
-        await callback.answer(
-            "Урок не найден.",
-            show_alert=True,
+        await safe_edit(
+            callback,
+            "🎉 Вы уже прошли весь курс!",
+            reply_markup=main_menu(is_admin=user.is_admin),
         )
         return
-
     await send_lesson(callback, lesson)
 
 
 @dp.callback_query(F.data == "lessons")
 async def show_lessons(callback: CallbackQuery):
     user = await check_course_access(callback)
-
     if user is None:
         return
-
+    completed_ids = get_completed_lesson_ids(user_id=user.id, course_id=COURSE_ID)
+    next_lesson = get_next_available_lesson(user_id=user.id, course_id=COURSE_ID)
+    available_lesson_id = next_lesson.id if next_lesson else None
     await safe_edit(
         callback,
-        "📚 Все уроки курса\n\n"
-        "Выберите урок:",
-        reply_markup=lessons_list_keyboard(
-            lessons,
-            user.current_lesson,
-        ),
+        "📚 Все уроки курса\n\nВыберите урок:",
+        reply_markup=lessons_list_keyboard(lessons, completed_ids, available_lesson_id),
     )
 
 
 @dp.callback_query(F.data.startswith("open_lesson:"))
 async def open_lesson(callback: CallbackQuery):
     user = await check_course_access(callback)
-
     if user is None or callback.data is None:
         return
-
-    lesson_position = int(
-        callback.data.split(":")[1]
-    )
-
-    if lesson_position > user.current_lesson:
-        await callback.answer(
-            "🔒 Этот урок пока закрыт. "
-            "Сначала пройдите предыдущий.",
-            show_alert=True,
-        )
-        return
-
+    lesson_position = int(callback.data.split(":")[1])
     lesson = get_lesson_by_position(lesson_position)
-
     if lesson is None:
+        await callback.answer("Урок не найден.", show_alert=True)
+        return
+    available = is_lesson_available(user_id=user.id, lesson_id=lesson.id)
+    completed = is_lesson_completed(user_id=user.id, lesson_id=lesson.id)
+    if not available and (not completed):
         await callback.answer(
-            "Урок не найден.",
-            show_alert=True,
+            "🔒 Этот урок пока закрыт. Сначала пройдите предыдущий.", show_alert=True
         )
         return
-
     await send_lesson(callback, lesson)
 
 
 @dp.callback_query(F.data.startswith("locked_lesson:"))
 async def locked_lesson(callback: CallbackQuery):
     await callback.answer(
-        "🔒 Этот урок пока закрыт. "
-        "Сначала пройдите предыдущий.",
-        show_alert=True,
+        "🔒 Этот урок пока закрыт. Сначала пройдите предыдущий.", show_alert=True
     )
 
 
 @dp.callback_query(F.data.startswith("complete:"))
 async def complete_lesson(callback: CallbackQuery):
     user = await check_course_access(callback)
-
-    if (
-        user is None
-        or callback.data is None
-        or callback.message is None
-    ):
+    if user is None or callback.data is None or callback.message is None:
         return
-
-    lesson_position = int(
-        callback.data.split(":")[1]
-    )
-    current_lesson = user.current_lesson
-    total_lessons = len(lessons)
-
-    if lesson_position < current_lesson:
-        await callback.answer(
-            "✅ Этот урок уже пройден. "
-            "Вы можете пересмотреть его в любое время.",
-            show_alert=True,
-        )
+    lesson_position = int(callback.data.split(":")[1])
+    lesson = get_lesson_by_position(lesson_position)
+    if lesson is None:
+        await callback.answer("Урок не найден.", show_alert=True)
         return
-
-    if lesson_position > current_lesson:
-        await callback.answer(
-            "🔒 Сначала завершите текущий урок.",
-            show_alert=True,
-        )
+    already_completed = is_lesson_completed(user_id=user.id, lesson_id=lesson.id)
+    if already_completed:
+        await callback.answer("✅ Этот урок уже пройден.", show_alert=True)
         return
-
-    if lesson_position < total_lessons:
-        next_position = lesson_position + 1
-
-        update_current_lesson(
-            user.telegram_id,
-            next_position,
-        )
-
-        next_lesson = get_lesson_by_position(
-            next_position
-        )
-
-        if next_lesson is None:
-            await callback.answer(
-                "Следующий урок не найден.",
-                show_alert=True,
-            )
-            return
-
-        completed_percent = int(
-            (lesson_position / total_lessons) * 100
-        )
-
+    available = is_lesson_available(user_id=user.id, lesson_id=lesson.id)
+    if not available:
+        await callback.answer("🔒 Сначала пройдите предыдущий урок.", show_alert=True)
+        return
+    saved = mark_lesson_completed(user_id=user.id, lesson_id=lesson.id)
+    if not saved:
+        await callback.answer("Не удалось сохранить прогресс.", show_alert=True)
+        return
+    progress = get_course_progress(user_id=user.id, course_id=COURSE_ID)
+    next_lesson = get_next_available_lesson(user_id=user.id, course_id=COURSE_ID)
+    if next_lesson is None:
         await callback.message.answer(
-            f"🎉 Отлично! Урок {lesson_position} завершён.\n\n"
-            f"Прогресс курса: {completed_percent}%\n\n"
-            f"Открыт следующий урок:\n"
-            f"📚 {next_lesson.title}",
-            reply_markup=lesson_keyboard(
-                next_lesson.position,
-            ),
+            "🎉 Поздравляем!\n\nВы прошли весь курс!\n\nПрогресс: 100%",
+            reply_markup=main_menu(is_admin=user.is_admin),
         )
         return
-
-    update_current_lesson(
-        user.telegram_id,
-        total_lessons + 1,
+    await callback.message.answer(
+        f"🎉 Отлично! Урок {lesson.position} завершён.\n\nПрогресс курса: {progress['percent']}%\n\nОткрыт следующий урок:\n📚 {next_lesson.title}",
+        reply_markup=lesson_keyboard(next_lesson.position),
     )
 
-    await callback.message.answer(
-        "🎉 Поздравляем!\n\n"
-        "Вы прошли весь курс!",
-        reply_markup=main_menu(
-            is_admin=user.is_admin,
-        ),
+
+@dp.callback_query(F.data.startswith("buy_course:"))
+async def buy_course(callback: CallbackQuery):
+    if callback.data is None or callback.message is None:
+        return
+    course_id = int(callback.data.split(":")[1])
+    if course_id != COURSE_ID:
+        await callback.answer("Курс не знайдено.", show_alert=True)
+        return
+    await safe_edit(
+        callback,
+        f"💳 Придбання курсу\n\n{COURSE_TITLE}\n\nВартість: {COURSE_PRICE} грн\n\nОплату підключимо на наступному етапі.",
+        reply_markup=buy_course_keyboard(course_id),
     )
 
 
 @dp.callback_query(F.data == "profile")
 async def profile(callback: CallbackQuery):
-    user = get_user_from_telegram(
-        callback.from_user
-    )
+    await show_profile(callback=callback)
 
-    total_lessons = len(lessons)
-
-    completed_lessons = min(
-        max(user.current_lesson - 1, 0),
-        total_lessons,
-    )
-
-    progress_percent = (
-        int(
-            completed_lessons
-            / total_lessons
-            * 100
-        )
-        if total_lessons
-        else 0
-    )
-
-    progress_bar = build_progress_bar(
-        user.current_lesson,
-        total_lessons,
-    )
-
-    username = (
-        f"@{user.username}"
-        if user.username
-        else "Username не указан"
-    )
-
-    if completed_lessons >= total_lessons:
-        current_status = "✅ Курс завершён"
-    else:
-        current_status = (
-            f"▶ Поточний урок: "
-            f"{min(user.current_lesson, total_lessons)}"
-        )
-
-    await safe_edit(
-        callback,
-        f"👤 Особистий кабінет\n\n"
-        f"Вітаємо, {user.first_name or 'учню'} 👋\n"
-        f"{username}\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🏆 Ваш прогрес\n\n"
-        f"📚 Придбано курсів: 1\n"
-        f"🎓 Завершено уроків: "
-        f"{completed_lessons}\n"
-        f"⭐ Загальний прогрес: "
-        f"{progress_percent}%\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📦 КУРС 1\n\n"
-        f"Монтаж гіпсокартону з нуля\n\n"
-        f"{progress_bar} {progress_percent}%\n\n"
-        f"✔ {completed_lessons} із "
-        f"{total_lessons} уроків\n"
-        f"{current_status}\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🔒 КУРС 2\n\n"
-        f"У розробці\n"
-        f"🚧 Незабаром\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🔒 КУРС 3\n\n"
-        f"У розробці\n"
-        f"🚧 Незабаром",
-        reply_markup=main_menu(
-            is_admin=user.is_admin,
-        ),
-    )
-
-
-# =========================================================
-# ГЛАВНЫЙ ЭКРАН АДМИНИСТРАТОРА
-# =========================================================
 
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel(callback: CallbackQuery):
     user = await check_admin(callback)
-
     if user is None:
         return
-
     await safe_edit(
         callback,
-        "👨‍💼 Панель администратора\n\n"
-        "Выберите раздел:",
+        "👨\u200d💼 Панель администратора\n\nВыберите раздел:",
         reply_markup=admin_menu(),
     )
 
 
-# =========================================================
-# АДМИН: КУРСЫ И УРОКИ
-# =========================================================
-
 @dp.callback_query(F.data == "admin_courses")
 async def admin_courses(callback: CallbackQuery):
     user = await check_admin(callback)
-
     if user is None:
         return
-
     await safe_edit(
         callback,
-        "📚 Управление курсами\n\n"
-        "Выберите курс:",
+        "📚 Управление курсами\n\nВыберите курс:",
         reply_markup=admin_courses_keyboard(),
+    )
+
+
+@dp.callback_query(F.data.startswith("create_payment:"))
+async def create_payment(callback: CallbackQuery):
+    await callback.answer(
+        "Платіжну систему підключимо наступним етапом.", show_alert=True
     )
 
 
 @dp.callback_query(F.data.startswith("admin_course:"))
 async def admin_course(callback: CallbackQuery):
     user = await check_admin(callback)
-
     if user is None or callback.data is None:
         return
-
-    course_id = int(
-        callback.data.split(":")[1]
-    )
-
-    course_lessons = [
-        lesson
-        for lesson in lessons
-        if lesson.course_id == course_id
-    ]
-
+    course_id = int(callback.data.split(":")[1])
+    course_lessons = [lesson for lesson in lessons if lesson.course_id == course_id]
     await safe_edit(
         callback,
-        f"🎓 {COURSE_TITLE}\n\n"
-        f"Цена: {COURSE_PRICE} грн\n"
-        f"Статус: активен\n"
-        f"Уроков: {len(course_lessons)}",
-        reply_markup=admin_course_keyboard(
-            course_id
-        ),
+        f"🎓 {COURSE_TITLE}\n\nЦена: {COURSE_PRICE} грн\nСтатус: активен\nУроков: {len(course_lessons)}",
+        reply_markup=admin_course_keyboard(course_id),
     )
 
 
-@dp.callback_query(
-    F.data.startswith("admin_course_lessons:")
-)
-async def admin_course_lessons(
-    callback: CallbackQuery,
-):
+@dp.callback_query(F.data.startswith("admin_course_lessons:"))
+async def admin_course_lessons(callback: CallbackQuery):
     user = await check_admin(callback)
-
     if user is None or callback.data is None:
         return
-
-    course_id = int(
-        callback.data.split(":")[1]
-    )
-
-    course_lessons = [
-        lesson
-        for lesson in lessons
-        if lesson.course_id == course_id
-    ]
-
+    course_id = int(callback.data.split(":")[1])
+    course_lessons = [lesson for lesson in lessons if lesson.course_id == course_id]
     await safe_edit(
         callback,
-        "📖 Уроки курса\n\n"
-        "Выберите урок:\n\n"
-        "🎥 — видео загружено\n"
-        "📄 — PDF загружен\n"
-        "⚪️ — материал отсутствует",
-        reply_markup=admin_lessons_keyboard(
-            course_lessons,
-            course_id,
-        ),
+        "📖 Уроки курса\n\nВыберите урок:\n\n🎥 — видео загружено\n📄 — PDF загружен\n⚪️ — материал отсутствует",
+        reply_markup=admin_lessons_keyboard(course_lessons, course_id),
     )
 
 
-# =========================================================
-# АДМИН: ЗАГРУЗКА ВИДЕО
-# =========================================================
-
-@dp.callback_query(
-    F.data.startswith("admin_lesson_video:")
-)
-async def admin_lesson_video(
-    callback: CallbackQuery,
-    state: FSMContext,
-):
+@dp.callback_query(F.data.startswith("admin_lesson_video:"))
+async def admin_lesson_video(callback: CallbackQuery, state: FSMContext):
     user = await check_admin(callback)
-
-    if (
-        user is None
-        or callback.data is None
-        or callback.message is None
-    ):
+    if user is None or callback.data is None or callback.message is None:
         return
-
-    lesson_id = int(
-        callback.data.split(":")[1]
-    )
-
-    await state.update_data(
-        lesson_id=lesson_id
-    )
-    await state.set_state(
-        AdminLessonEdit.waiting_for_video
-    )
-
+    lesson_id = int(callback.data.split(":")[1])
+    await state.update_data(lesson_id=lesson_id)
+    await state.set_state(AdminLessonEdit.waiting_for_video)
     await callback.message.answer(
-        "🎥 Отправьте видео для этого урока.\n\n"
-        "После загрузки бот автоматически "
-        "сохранит его."
+        "🎥 Отправьте видео для этого урока.\n\nПосле загрузки бот автоматически сохранит его."
     )
 
 
-@dp.message(
-    AdminLessonEdit.waiting_for_video,
-    F.video,
-)
-async def save_admin_video(
-    message: Message,
-    state: FSMContext,
-):
-    if (
-        message.from_user is None
-        or message.video is None
-    ):
+@dp.message(AdminLessonEdit.waiting_for_video, F.video)
+async def save_admin_video(message: Message, state: FSMContext):
+    if message.from_user is None or message.video is None:
         return
-
-    user = get_user_from_telegram(
-        message.from_user
-    )
-
+    user = get_user_from_telegram(message.from_user)
     if not user.is_admin:
         await message.answer("⛔ Нет доступа.")
         await state.clear()
         return
-
     data = await state.get_data()
     lesson_id = data.get("lesson_id")
-
     if lesson_id is None:
-        await message.answer(
-            "Не удалось определить урок."
-        )
+        await message.answer("Не удалось определить урок.")
         await state.clear()
         return
-
     saved = update_lesson_video(
-        lesson_id=int(lesson_id),
-        video_file_id=message.video.file_id,
+        lesson_id=int(lesson_id), video_file_id=message.video.file_id
     )
-
     if not saved:
         await message.answer("Урок не найден.")
         await state.clear()
         return
-
     refresh_lessons()
-
-    await message.answer(
-        "✅ Видео успешно сохранено.\n\n"
-        f"Урок ID: {lesson_id}"
-    )
-
+    await message.answer(f"✅ Видео успешно сохранено.\n\nУрок ID: {lesson_id}")
     await state.clear()
 
 
 @dp.message(AdminLessonEdit.waiting_for_video)
 async def wrong_admin_video(message: Message):
-    await message.answer(
-        "Пожалуйста, отправьте именно видео, "
-        "а не документ или текст."
-    )
+    await message.answer("Пожалуйста, отправьте именно видео, а не документ или текст.")
 
 
-# =========================================================
-# АДМИН: ЗАГРУЗКА PDF
-# =========================================================
-
-@dp.callback_query(
-    F.data.startswith("admin_lesson_pdf:")
-)
-async def admin_lesson_pdf(
-    callback: CallbackQuery,
-    state: FSMContext,
-):
+@dp.callback_query(F.data.startswith("admin_lesson_pdf:"))
+async def admin_lesson_pdf(callback: CallbackQuery, state: FSMContext):
     user = await check_admin(callback)
-
-    if (
-        user is None
-        or callback.data is None
-        or callback.message is None
-    ):
+    if user is None or callback.data is None or callback.message is None:
         return
-
-    lesson_id = int(
-        callback.data.split(":")[1]
-    )
-
-    await state.update_data(
-        lesson_id=lesson_id
-    )
-    await state.set_state(
-        AdminLessonEdit.waiting_for_pdf
-    )
-
-    await callback.message.answer(
-        "📄 Отправьте PDF-файл для этого урока."
-    )
+    lesson_id = int(callback.data.split(":")[1])
+    await state.update_data(lesson_id=lesson_id)
+    await state.set_state(AdminLessonEdit.waiting_for_pdf)
+    await callback.message.answer("📄 Отправьте PDF-файл для этого урока.")
 
 
-@dp.message(
-    AdminLessonEdit.waiting_for_pdf,
-    F.document,
-)
-async def save_admin_pdf(
-    message: Message,
-    state: FSMContext,
-):
-    if (
-        message.from_user is None
-        or message.document is None
-    ):
+@dp.message(AdminLessonEdit.waiting_for_pdf, F.document)
+async def save_admin_pdf(message: Message, state: FSMContext):
+    if message.from_user is None or message.document is None:
         return
-
-    user = get_user_from_telegram(
-        message.from_user
-    )
-
+    user = get_user_from_telegram(message.from_user)
     if not user.is_admin:
         await message.answer("⛔ Нет доступа.")
         await state.clear()
         return
-
-    file_name = (
-        message.document.file_name or ""
-    )
-
+    file_name = message.document.file_name or ""
     is_pdf = (
-        message.document.mime_type
-        == "application/pdf"
+        message.document.mime_type == "application/pdf"
         or file_name.lower().endswith(".pdf")
     )
-
     if not is_pdf:
-        await message.answer(
-            "⚠️ Это не PDF. "
-            "Отправьте файл формата .pdf."
-        )
+        await message.answer("⚠️ Это не PDF. Отправьте файл формата .pdf.")
         return
-
     data = await state.get_data()
     lesson_id = data.get("lesson_id")
-
     if lesson_id is None:
-        await message.answer(
-            "Не удалось определить урок."
-        )
+        await message.answer("Не удалось определить урок.")
         await state.clear()
         return
-
     saved = update_lesson_pdf(
-        lesson_id=int(lesson_id),
-        pdf_file_id=message.document.file_id,
+        lesson_id=int(lesson_id), pdf_file_id=message.document.file_id
     )
-
     if not saved:
         await message.answer("Урок не найден.")
         await state.clear()
         return
-
     refresh_lessons()
-
-    await message.answer(
-        "✅ PDF успешно сохранён.\n\n"
-        f"Урок ID: {lesson_id}"
-    )
-
+    await message.answer(f"✅ PDF успешно сохранён.\n\nУрок ID: {lesson_id}")
     await state.clear()
 
 
 @dp.message(AdminLessonEdit.waiting_for_pdf)
 async def wrong_admin_pdf(message: Message):
-    await message.answer(
-        "Пожалуйста, отправьте PDF как файл."
-    )
+    await message.answer("Пожалуйста, отправьте PDF как файл.")
 
 
-# =========================================================
-# АДМИН: ИЗМЕНЕНИЕ ОПИСАНИЯ
-# =========================================================
-
-@dp.callback_query(
-    F.data.startswith(
-        "admin_lesson_description:"
-    )
-)
-async def admin_lesson_description(
-    callback: CallbackQuery,
-    state: FSMContext,
-):
+@dp.callback_query(F.data.startswith("admin_lesson_description:"))
+async def admin_lesson_description(callback: CallbackQuery, state: FSMContext):
     user = await check_admin(callback)
-
-    if (
-        user is None
-        or callback.data is None
-        or callback.message is None
-    ):
+    if user is None or callback.data is None or callback.message is None:
         return
-
-    lesson_id = int(
-        callback.data.split(":")[1]
-    )
-
-    await state.update_data(
-        lesson_id=lesson_id
-    )
-    await state.set_state(
-        AdminLessonEdit.waiting_for_description
-    )
-
+    lesson_id = int(callback.data.split(":")[1])
+    await state.update_data(lesson_id=lesson_id)
+    await state.set_state(AdminLessonEdit.waiting_for_description)
     await callback.message.answer(
-        "📝 Отправьте новое описание урока "
-        "одним текстовым сообщением."
+        "📝 Отправьте новое описание урока одним текстовым сообщением."
     )
 
 
-@dp.message(
-    AdminLessonEdit.waiting_for_description,
-    F.text,
-)
-async def save_admin_description(
-    message: Message,
-    state: FSMContext,
-):
-    if (
-        message.from_user is None
-        or message.text is None
-    ):
+@dp.message(AdminLessonEdit.waiting_for_description, F.text)
+async def save_admin_description(message: Message, state: FSMContext):
+    if message.from_user is None or message.text is None:
         return
-
-    user = get_user_from_telegram(
-        message.from_user
-    )
-
+    user = get_user_from_telegram(message.from_user)
     if not user.is_admin:
         await message.answer("⛔ Нет доступа.")
         await state.clear()
         return
-
     description = message.text.strip()
-
     if len(description) < 5:
-        await message.answer(
-            "Описание слишком короткое. "
-            "Введите хотя бы 5 символов."
-        )
+        await message.answer("Описание слишком короткое. Введите хотя бы 5 символов.")
         return
-
     data = await state.get_data()
     lesson_id = data.get("lesson_id")
-
     if lesson_id is None:
-        await message.answer(
-            "Не удалось определить урок."
-        )
+        await message.answer("Не удалось определить урок.")
         await state.clear()
         return
-
-    saved = update_lesson_description(
-        lesson_id=int(lesson_id),
-        description=description,
-    )
-
+    saved = update_lesson_description(lesson_id=int(lesson_id), description=description)
     if not saved:
         await message.answer("Урок не найден.")
         await state.clear()
         return
-
     refresh_lessons()
-
-    await message.answer(
-        "✅ Описание урока обновлено."
-    )
-
+    await message.answer("✅ Описание урока обновлено.")
     await state.clear()
 
 
-@dp.message(
-    AdminLessonEdit.waiting_for_description
-)
-async def wrong_admin_description(
-    message: Message,
-):
-    await message.answer(
-        "Пожалуйста, отправьте описание "
-        "обычным текстом."
-    )
+@dp.message(AdminLessonEdit.waiting_for_description)
+async def wrong_admin_description(message: Message):
+    await message.answer("Пожалуйста, отправьте описание обычным текстом.")
 
 
-# =========================================================
-# АДМИН: ПРЕДПРОСМОТР УРОКА
-# =========================================================
-
-@dp.callback_query(
-    F.data.startswith("admin_lesson_preview:")
-)
-async def admin_lesson_preview(
-    callback: CallbackQuery,
-):
+@dp.callback_query(F.data.startswith("admin_lesson_preview:"))
+async def admin_lesson_preview(callback: CallbackQuery):
     user = await check_admin(callback)
-
     if user is None or callback.data is None:
         return
-
-    lesson_id = int(
-        callback.data.split(":")[1]
-    )
-
+    lesson_id = int(callback.data.split(":")[1])
     lesson = get_lesson_by_id(lesson_id)
-
     if lesson is None:
-        await callback.answer(
-            "Урок не найден.",
-            show_alert=True,
-        )
+        await callback.answer("Урок не найден.", show_alert=True)
         return
-
     await send_lesson(callback, lesson)
 
-
-# =========================================================
-# АДМИН: КАРТОЧКА УРОКА
-# ВАЖНО: общий обработчик размещён после video/pdf/description
-# =========================================================
 
 @dp.callback_query(F.data.startswith("admin_lesson:"))
 async def admin_lesson(callback: CallbackQuery):
     user = await check_admin(callback)
-
     if user is None or callback.data is None:
         return
-
-    lesson_id = int(
-        callback.data.split(":")[1]
-    )
-
+    lesson_id = int(callback.data.split(":")[1])
     lesson = get_lesson_by_id(lesson_id)
-
     if lesson is None:
-        await callback.answer(
-            "Урок не найден.",
-            show_alert=True,
-        )
+        await callback.answer("Урок не найден.", show_alert=True)
         return
-
-    video_status = (
-        "✅ загружено"
-        if lesson.video_file_id
-        else "❌ не загружено"
-    )
-
-    pdf_status = (
-        "✅ загружено"
-        if lesson.pdf_file_id
-        else "❌ не загружено"
-    )
-
+    video_status = "✅ загружено" if lesson.video_file_id else "❌ не загружено"
+    pdf_status = "✅ загружено" if lesson.pdf_file_id else "❌ не загружено"
     await safe_edit(
         callback,
-        f"📖 {lesson.title}\n\n"
-        f"Позиция: {lesson.position}\n"
-        f"Видео: {video_status}\n"
-        f"PDF: {pdf_status}\n\n"
-        f"Описание:\n"
-        f"{lesson.description or 'Описание не добавлено'}",
-        reply_markup=admin_lesson_keyboard(
-            lesson.id,
-            lesson.course_id,
-        ),
+        f"📖 {lesson.title}\n\nПозиция: {lesson.position}\nВидео: {video_status}\nPDF: {pdf_status}\n\nОписание:\n{lesson.description or 'Описание не добавлено'}",
+        reply_markup=admin_lesson_keyboard(lesson.id, lesson.course_id),
     )
 
-
-# =========================================================
-# ЗАГЛУШКИ ДЛЯ БУДУЩИХ РАЗДЕЛОВ
-# =========================================================
 
 @dp.callback_query(F.data == "admin_news")
-
 async def admin_news(callback: CallbackQuery):
-
     user = await check_admin(callback)
-
     if user is None:
-
         return
-
     await safe_edit(
-
         callback,
-
-        "📢 Управление новостями\n\n"
-
-        "Здесь можно создать объявление "
-
-        "и отправить его активным ученикам.",
-
+        "📢 Управление новостями\n\nЗдесь можно создать объявление и отправить его активным ученикам.",
         reply_markup=admin_news_keyboard(),
-
     )
+
 
 @dp.callback_query(F.data == "admin_news_create")
-
-async def admin_news_create(
-
-    callback: CallbackQuery,
-
-    state: FSMContext,
-
-):
-
+async def admin_news_create(callback: CallbackQuery, state: FSMContext):
     user = await check_admin(callback)
-
     if user is None or callback.message is None:
-
         return
-
     await state.clear()
-
-    await state.set_state(
-
-        AdminAnnouncementCreate.waiting_for_title
-
-    )
-
-    await callback.message.answer(
-
-        "📝 Введите заголовок новости."
-
-    )
+    await state.set_state(AdminAnnouncementCreate.waiting_for_title)
+    await callback.message.answer("📝 Введите заголовок новости.")
 
 
-@dp.message(
-
-    AdminAnnouncementCreate.waiting_for_title,
-
-    F.text,
-
-)
-
-async def admin_news_title(
-
-    message: Message,
-
-    state: FSMContext,
-
-):
-
+@dp.message(AdminAnnouncementCreate.waiting_for_title, F.text)
+async def admin_news_title(message: Message, state: FSMContext):
     if message.text is None:
-
         return
-
     title = message.text.strip()
-
     if len(title) < 3:
-
-        await message.answer(
-
-            "Заголовок слишком короткий."
-
-        )
-
+        await message.answer("Заголовок слишком короткий.")
         return
-
     await state.update_data(title=title)
+    await state.set_state(AdminAnnouncementCreate.waiting_for_text)
+    await message.answer("📄 Теперь отправьте текст новости.")
 
-    await state.set_state(
 
-        AdminAnnouncementCreate.waiting_for_text
-
-    )
-
-    await message.answer(
-
-        "📄 Теперь отправьте текст новости."
-
-    )
-
-@dp.message(
-    AdminAnnouncementCreate.waiting_for_text,
-    F.text,
-)
-async def admin_news_text(
-    message: Message,
-    state: FSMContext,
-):
+@dp.message(AdminAnnouncementCreate.waiting_for_text, F.text)
+async def admin_news_text(message: Message, state: FSMContext):
     if message.text is None:
         return
-
     text = message.text.strip()
-
     if len(text) < 5:
-        await message.answer(
-            "Текст новости слишком короткий."
-        )
+        await message.answer("Текст новости слишком короткий.")
         return
-
     await state.update_data(text=text)
-
-    await state.set_state(
-        AdminAnnouncementCreate.waiting_for_image
-    )
-
+    await state.set_state(AdminAnnouncementCreate.waiting_for_image)
     await message.answer(
-        "🖼 Отправьте одну картинку для новости.\n\n"
-        "Или опубликуйте новость без изображения.",
+        "🖼 Отправьте одну картинку для новости.\n\nИли опубликуйте новость без изображения.",
         reply_markup=announcement_image_keyboard(),
     )
 
 
-@dp.message(
-
-    AdminAnnouncementCreate.waiting_for_image,
-
-    F.photo,
-
-)
-
-async def admin_news_image(
-
-    message: Message,
-
-    state: FSMContext,
-
-):
-
+@dp.message(AdminAnnouncementCreate.waiting_for_image, F.photo)
+async def admin_news_image(message: Message, state: FSMContext):
     if not message.photo:
-
         return
-
     data = await state.get_data()
-
     title = data.get("title")
-
     text = data.get("text")
-
     if not title or not text:
-
-        await message.answer(
-
-            "Не удалось получить данные новости."
-
-        )
-
+        await message.answer("Не удалось получить данные новости.")
         await state.clear()
-
         return
-
     image_file_id = message.photo[-1].file_id
-
     announcement = create_announcement(
-
-        title=title,
-
-        text=text,
-
-        image_file_id=image_file_id,
-
+        title=title, text=text, image_file_id=image_file_id
     )
-
     await state.clear()
-
     await message.answer_photo(
-
         photo=image_file_id,
-
-        caption=(
-
-            f"📢 <b>Предпросмотр новости</b>\n\n"
-
-            f"<b>{announcement.title}</b>\n\n"
-
-            f"{announcement.text}"
-
-        ),
-
+        caption=f"📢 <b>Предпросмотр новости</b>\n\n<b>{announcement.title}</b>\n\n{announcement.text}",
         parse_mode="HTML",
-
-        reply_markup=announcement_confirmation_keyboard(
-
-            announcement.id
-
-        ),
-
+        reply_markup=announcement_confirmation_keyboard(announcement.id),
     )
 
-@dp.callback_query(
-    F.data == "admin_news_without_image"
-)
-async def admin_news_without_image(
-    callback: CallbackQuery,
-    state: FSMContext,
-):
-    user = await check_admin(callback)
 
+@dp.callback_query(F.data == "admin_news_without_image")
+async def admin_news_without_image(callback: CallbackQuery, state: FSMContext):
+    user = await check_admin(callback)
     if user is None or callback.message is None:
         return
-
     data = await state.get_data()
-
     title = data.get("title")
     text = data.get("text")
-
     if not title or not text:
-        await callback.answer(
-            "Не удалось получить данные новости.",
-            show_alert=True,
-        )
+        await callback.answer("Не удалось получить данные новости.", show_alert=True)
         await state.clear()
         return
-
-    announcement = create_announcement(
-        title=title,
-        text=text,
-        image_file_id=None,
-    )
-
+    announcement = create_announcement(title=title, text=text, image_file_id=None)
     await state.clear()
-
     await callback.message.answer(
-        f"📢 <b>Предпросмотр новости</b>\n\n"
-        f"<b>{announcement.title}</b>\n\n"
-        f"{announcement.text}",
+        f"📢 <b>Предпросмотр новости</b>\n\n<b>{announcement.title}</b>\n\n{announcement.text}",
         parse_mode="HTML",
-        reply_markup=announcement_confirmation_keyboard(
-            announcement.id
-        ),
+        reply_markup=announcement_confirmation_keyboard(announcement.id),
     )
 
-@dp.message(
-    AdminAnnouncementCreate.waiting_for_image
-)
-async def wrong_announcement_image(
-    message: Message,
-):
+
+@dp.message(AdminAnnouncementCreate.waiting_for_image)
+async def wrong_announcement_image(message: Message):
     await message.answer(
-        "Отправьте изображение как фотографию "
-        "или нажмите «Без изображения»."
+        "Отправьте изображение как фотографию или нажмите «Без изображения»."
     )
 
 
-
-
-@dp.callback_query(
-    F.data.startswith("admin_news_publish:")
-)
-async def admin_news_publish(
-    callback: CallbackQuery,
-):
+@dp.callback_query(F.data.startswith("admin_news_publish:"))
+async def admin_news_publish(callback: CallbackQuery):
     user = await check_admin(callback)
-
-    if (
-        user is None
-        or callback.data is None
-        or callback.message is None
-    ):
+    if user is None or callback.data is None or callback.message is None:
         return
-
-    announcement_id = int(
-        callback.data.split(":")[1]
-    )
-
-    announcement = get_announcement(
-        announcement_id
-    )
-
+    announcement_id = int(callback.data.split(":")[1])
+    announcement = get_announcement(announcement_id)
     if announcement is None:
-        await callback.answer(
-            "Новость не найдена.",
-            show_alert=True,
-        )
+        await callback.answer("Новость не найдена.", show_alert=True)
         return
-
-    published = publish_announcement(
-        announcement_id
-    )
-
+    published = publish_announcement(announcement_id)
     if not published:
-        await callback.answer(
-            "Не удалось опубликовать новость.",
-            show_alert=True,
-        )
+        await callback.answer("Не удалось опубликовать новость.", show_alert=True)
         return
-
-    telegram_ids = get_active_student_telegram_ids(
-        course_id=COURSE_ID
-    )
-
+    telegram_ids = get_active_student_telegram_ids(course_id=COURSE_ID)
     delivered = 0
     failed = 0
-
     for telegram_id in telegram_ids:
         try:
             if announcement.image_file_id:
                 await bot.send_photo(
                     chat_id=telegram_id,
                     photo=announcement.image_file_id,
-                    caption=(
-                        f"📢 <b>{announcement.title}</b>\n\n"
-                        f"{announcement.text}"
-                    ),
+                    caption=f"📢 <b>{html.escape(announcement.title)}</b>\n\n{html.escape(announcement.text)}",
                     parse_mode="HTML",
                     protect_content=True,
                 )
             else:
                 await bot.send_message(
                     chat_id=telegram_id,
-                    text=(
-                        f"📢 <b>{announcement.title}</b>\n\n"
-                        f"{announcement.text}"
-                    ),
+                    text=f"📢 <b>{html.escape(announcement.title)}</b>\n\n{html.escape(announcement.text)}",
                     parse_mode="HTML",
                     protect_content=True,
                 )
-
             delivered += 1
-
         except Exception:
             failed += 1
-
     await callback.message.answer(
-        "✅ Новость опубликована.\n\n"
-        f"Доставлено: {delivered}\n"
-        f"Ошибок: {failed}"
+        f"✅ Новость опубликована.\n\nДоставлено: {delivered}\nОшибок: {failed}"
     )
-
     await callback.answer()
 
 
-@dp.callback_query(
-
-    F.data.startswith("admin_news_cancel:")
-
-)
-
-async def admin_news_cancel(
-
-    callback: CallbackQuery,
-
-):
-
+@dp.callback_query(F.data.startswith("admin_news_cancel:"))
+async def admin_news_cancel(callback: CallbackQuery):
     user = await check_admin(callback)
-
     if user is None:
-
         return
-
     await safe_edit(
-
-        callback,
-
-        "❌ Публикация отменена.",
-
-        reply_markup=admin_news_keyboard(),
-
+        callback, "❌ Публикация отменена.", reply_markup=admin_news_keyboard()
     )
+
 
 @dp.callback_query(F.data == "admin_news_history")
-
-async def admin_news_history(
-
-    callback: CallbackQuery,
-
-):
-
+async def admin_news_history(callback: CallbackQuery):
     user = await check_admin(callback)
-
     if user is None:
-
         return
-
     announcements = get_published_announcements()
-
     if not announcements:
-
         text = "📋 Опубликованных новостей пока нет."
-
     else:
-
         parts = ["📋 История новостей\n"]
-
         for announcement in announcements[:10]:
-
-            parts.append(
-
-                f"• {announcement.title}"
-
-            )
-
+            parts.append(f"• {announcement.title}")
         text = "\n".join(parts)
-
-    await safe_edit(
-
-        callback,
-
-        text,
-
-        reply_markup=admin_news_keyboard(),
-
-    )
-
+    await safe_edit(callback, text, reply_markup=admin_news_keyboard())
 
 
 @dp.callback_query(F.data == "admin_students")
 async def admin_students(callback: CallbackQuery):
     user = await check_admin(callback)
-
     if user is None:
         return
-
-    await callback.answer(
-        "Раздел учеников добавим следующим этапом.",
-        show_alert=True,
-    )
+    await callback.answer("Раздел учеников добавим следующим этапом.", show_alert=True)
 
 
 @dp.callback_query(F.data == "admin_statistics")
 async def admin_statistics(callback: CallbackQuery):
     user = await check_admin(callback)
-
     if user is None:
         return
-
     await callback.answer(
-        "Раздел статистики добавим следующим этапом.",
-        show_alert=True,
+        "Раздел статистики добавим следующим этапом.", show_alert=True
     )
 
-
-# =========================================================
-# ЗАПУСК
-# =========================================================
 
 async def main():
     await dp.start_polling(bot)

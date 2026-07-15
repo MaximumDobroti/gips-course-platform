@@ -1,22 +1,15 @@
+from app.models.announcement import Announcement
 from app.models.course import Course
-
 from app.models.lesson import Lesson
-
+from app.models.lesson_progress import LessonProgress
 from app.models.purchase import Purchase
-
 from app.models.user import User
 
-from app.models.announcement import Announcement
-
 __all__ = [
-
-    "Course",
-
-    "Lesson",
-
-    "Purchase",
-
-    "User",
     "Announcement",
-
+    "Course",
+    "Lesson",
+    "LessonProgress",
+    "Purchase",
+    "User",
 ]
