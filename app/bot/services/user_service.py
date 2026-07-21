@@ -6,6 +6,7 @@ from app.models.user import User
 
 def get_db():
     db = SessionLocal()
+
     try:
         yield db
     finally:
@@ -16,7 +17,75 @@ def get_user(telegram_id: int):
     db: Session = SessionLocal()
 
     try:
-        return db.query(User).filter(User.telegram_id == telegram_id).first()
+        return (
+            db.query(User)
+            .filter(User.telegram_id == telegram_id)
+            .first()
+        )
+    finally:
+        db.close()
+
+
+def get_user_by_id(user_id: int):
+    db: Session = SessionLocal()
+
+    try:
+        return (
+            db.query(User)
+            .filter(User.id == user_id)
+            .first()
+        )
+    finally:
+        db.close()
+
+
+def get_users_count() -> int:
+    db: Session = SessionLocal()
+
+    try:
+        return db.query(User).count()
+    finally:
+        db.close()
+
+
+def get_all_users(
+    limit: int = 10,
+    offset: int = 0,
+):
+    db: Session = SessionLocal()
+
+    try:
+        return (
+            db.query(User)
+            .order_by(User.id.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+    finally:
+        db.close()
+
+
+def search_users(
+    search_text: str,
+    limit: int = 20,
+):
+    db: Session = SessionLocal()
+
+    try:
+        value = f"%{search_text.strip()}%"
+
+        return (
+            db.query(User)
+            .filter(
+                (User.first_name.ilike(value))
+                | (User.last_name.ilike(value))
+                | (User.username.ilike(value))
+            )
+            .order_by(User.id.desc())
+            .limit(limit)
+            .all()
+        )
     finally:
         db.close()
 
@@ -57,13 +126,18 @@ def get_or_create_user(
     user = get_user(telegram_id)
 
     if user:
-
         changed = False
-
         db: Session = SessionLocal()
 
         try:
-            user = db.query(User).filter(User.telegram_id == telegram_id).first()
+            user = (
+                db.query(User)
+                .filter(User.telegram_id == telegram_id)
+                .first()
+            )
+
+            if user is None:
+                return None
 
             if user.first_name != first_name:
                 user.first_name = first_name
@@ -79,6 +153,7 @@ def get_or_create_user(
 
             if changed:
                 db.commit()
+                db.refresh(user)
 
             return user
 
@@ -86,18 +161,25 @@ def get_or_create_user(
             db.close()
 
     return create_user(
-        telegram_id,
-        first_name,
-        last_name,
-        username,
+        telegram_id=telegram_id,
+        first_name=first_name,
+        last_name=last_name,
+        username=username,
     )
 
 
-def update_current_lesson(telegram_id: int, lesson: int):
+def update_current_lesson(
+    telegram_id: int,
+    lesson: int,
+):
     db: Session = SessionLocal()
 
     try:
-        user = db.query(User).filter(User.telegram_id == telegram_id).first()
+        user = (
+            db.query(User)
+            .filter(User.telegram_id == telegram_id)
+            .first()
+        )
 
         if user:
             user.current_lesson = lesson
