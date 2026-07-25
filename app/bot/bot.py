@@ -19,6 +19,24 @@ from app.bot.services.announcement_service import (
     publish_announcement,
 )
 
+from app.bot.services.course_service import (
+
+    create_course_with_lessons,
+
+    delete_course,
+
+    delete_lesson,
+
+    get_all_courses,
+
+    get_course_by_id,
+
+    update_course_price,
+
+)
+
+
+
 from app.bot.services.purchase_service import (
 
     get_purchased_courses_count,
@@ -91,6 +109,23 @@ class AdminLessonEdit(StatesGroup):
     waiting_for_title = State()
     waiting_for_description = State()
 
+class AdminCourseCreate(StatesGroup):
+
+    waiting_for_title = State()
+
+    waiting_for_lessons_count = State()
+
+    waiting_for_lesson_title = State()
+
+    waiting_for_price = State()
+
+    waiting_for_confirmation = State()
+
+class AdminCourseEdit(StatesGroup):
+
+    waiting_for_price = State()
+
+
 
 class AdminAnnouncementCreate(StatesGroup):
     waiting_for_title = State()
@@ -160,6 +195,59 @@ def purchase_success_keyboard():
 
     return keyboard.as_markup()
 
+def admin_course_delete_confirmation_keyboard(
+    course_id: int,
+):
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="🗑 Да, удалить курс",
+        callback_data=(
+            f"admin_course_delete_confirm:{course_id}"
+        ),
+    )
+
+    keyboard.button(
+        text="❌ Отмена",
+        callback_data=f"admin_course:{course_id}",
+    )
+
+    keyboard.adjust(1)
+
+    return keyboard.as_markup()
+
+
+def admin_lesson_delete_confirmation_keyboard(
+    lesson_id: int,
+    course_id: int,
+):
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="🗑 Да, удалить урок",
+        callback_data=(
+            f"admin_lesson_delete_confirm:{lesson_id}"
+        ),
+    )
+
+    keyboard.button(
+        text="❌ Отмена",
+        callback_data=f"admin_lesson:{lesson_id}",
+    )
+
+    keyboard.button(
+        text="⬅️ К урокам",
+        callback_data=(
+            f"admin_course_lessons:{course_id}"
+        ),
+    )
+
+    keyboard.adjust(1)
+
+    return keyboard.as_markup()
+
+
+
 def test_payment_keyboard(course_id: int):
 
     keyboard = InlineKeyboardBuilder()
@@ -184,6 +272,35 @@ def test_payment_keyboard(course_id: int):
 
     return keyboard.as_markup()
 
+
+def admin_course_create_cancel_keyboard():
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="❌ Отменить создание",
+        callback_data="admin_course_create_cancel",
+    )
+
+    keyboard.adjust(1)
+
+    return keyboard.as_markup()
+
+def admin_course_create_confirmation_keyboard():
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="✅ Создать курс",
+        callback_data="admin_course_create_confirm",
+    )
+
+    keyboard.button(
+        text="❌ Отменить",
+        callback_data="admin_course_create_cancel",
+    )
+
+    keyboard.adjust(1)
+
+    return keyboard.as_markup()
 
 
 def get_lesson_by_id(lesson_id: int):
@@ -768,23 +885,67 @@ def admin_student_keyboard(
     keyboard.adjust(1)
     return keyboard.as_markup()
 
-
-def admin_courses_keyboard():
+def admin_courses_keyboard(courses):
     keyboard = InlineKeyboardBuilder()
-    keyboard.button(
-        text="🎓 Курс 1. Монтаж гипсокартона", callback_data=f"admin_course:{COURSE_ID}"
-    )
-    keyboard.button(text="⬅️ Назад", callback_data="admin_panel")
-    keyboard.adjust(1)
-    return keyboard.as_markup()
 
+    for course in courses:
+        visibility_icon = (
+            "🟢"
+            if course.is_visible and course.is_active
+            else "⚪️"
+        )
+
+        keyboard.button(
+            text=(
+                f"{visibility_icon} "
+                f"{course.position}. {course.title}"
+            ),
+            callback_data=f"admin_course:{course.id}",
+        )
+
+    keyboard.button(
+        text="➕ Добавить курс",
+        callback_data="admin_course_create",
+    )
+
+    keyboard.button(
+        text="⬅️ Назад",
+        callback_data="admin_panel",
+    )
+
+    keyboard.adjust(1)
+
+    return keyboard.as_markup()
 
 def admin_course_keyboard(course_id: int):
     keyboard = InlineKeyboardBuilder()
-    keyboard.button(text="📖 Уроки", callback_data=f"admin_course_lessons:{course_id}")
-    keyboard.button(text="⬅️ К курсам", callback_data="admin_courses")
+
+    keyboard.button(
+        text="📖 Уроки",
+        callback_data=f"admin_course_lessons:{course_id}",
+    )
+
+    keyboard.button(
+        text="💰 Изменить цену",
+        callback_data=f"admin_course_price:{course_id}",
+    )
+    keyboard.button(
+
+        text="🗑 Удалить курс",
+
+        callback_data=f"admin_course_delete:{course_id}",
+
+    )
+
+    keyboard.button(
+        text="⬅️ К курсам",
+        callback_data="admin_courses",
+    )
+
     keyboard.adjust(1)
+
     return keyboard.as_markup()
+
 
 
 def buy_course_keyboard(course_id: int):
@@ -839,6 +1000,17 @@ def admin_lesson_keyboard(lesson_id: int, course_id: int):
     keyboard.button(
         text="✏️ Изменить название",
         callback_data=f"admin_lesson_title:{lesson_id}",
+    )
+    keyboard.button(
+
+        text="🗑 Удалить урок",
+
+        callback_data=(
+
+            f"admin_lesson_delete:{lesson_id}"
+
+        ),
+
     )
 
     keyboard.button(
@@ -1786,17 +1958,475 @@ async def admin_panel(callback: CallbackQuery):
         reply_markup=admin_menu(),
     )
 
+@dp.callback_query(F.data == "admin_course_create")
+async def admin_course_create(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    user = await check_admin(callback)
+
+    if user is None or callback.message is None:
+        return
+
+    await state.clear()
+
+    await state.set_state(
+        AdminCourseCreate.waiting_for_title
+    )
+
+    await callback.message.answer(
+        "🎓 <b>СОЗДАНИЕ НОВОГО КУРСА</b>\n\n"
+        "Введите название курса одним сообщением.\n\n"
+        "Например:\n"
+        "<i>Монтаж гипсокартона с нуля</i>",
+        parse_mode="HTML",
+        reply_markup=(
+            admin_course_create_cancel_keyboard()
+        ),
+    )
+
+    await callback.answer()
+
+@dp.message(
+    AdminCourseCreate.waiting_for_title,
+    F.text,
+)
+async def admin_course_create_title(
+    message: Message,
+    state: FSMContext,
+):
+    if (
+        message.from_user is None
+        or message.text is None
+    ):
+        return
+
+    user = get_user_from_telegram(
+        message.from_user
+    )
+
+    if not user.is_admin:
+        await message.answer("⛔ Нет доступа.")
+        await state.clear()
+        return
+
+    title = message.text.strip()
+
+    if len(title) < 3:
+        await message.answer(
+            "Название слишком короткое.\n\n"
+            "Введите не менее 3 символов."
+        )
+        return
+
+    if len(title) > 255:
+        await message.answer(
+            "Название слишком длинное.\n\n"
+            "Максимум — 255 символов."
+        )
+        return
+
+    await state.update_data(
+        course_title=title
+    )
+
+    await state.set_state(
+        AdminCourseCreate.waiting_for_lessons_count
+    )
+
+    await message.answer(
+        "📖 Теперь укажите количество уроков.\n\n"
+        "Отправьте только число.\n\n"
+        "Например: <b>7</b>",
+        parse_mode="HTML",
+        reply_markup=(
+            admin_course_create_cancel_keyboard()
+        ),
+    )
+
+@dp.message(
+    AdminCourseCreate.waiting_for_title
+)
+async def admin_course_create_wrong_title(
+    message: Message,
+):
+    await message.answer(
+        "Отправьте название курса "
+        "обычным текстовым сообщением."
+    )
+
+@dp.message(
+    AdminCourseCreate.waiting_for_lessons_count,
+    F.text,
+)
+async def admin_course_create_lessons_count(
+    message: Message,
+    state: FSMContext,
+):
+    if message.text is None:
+        return
+
+    raw_count = message.text.strip()
+
+    if not raw_count.isdigit():
+        await message.answer(
+            "Введите количество уроков числом.\n\n"
+            "Например: <b>7</b>",
+            parse_mode="HTML",
+        )
+        return
+
+    lessons_count = int(raw_count)
+
+    if lessons_count < 1 or lessons_count > 100:
+        await message.answer(
+            "Количество уроков должно быть "
+            "от 1 до 100."
+        )
+        return
+
+    await state.update_data(
+        lessons_count=lessons_count,
+        lesson_titles=[],
+        current_lesson_number=1,
+    )
+
+    await state.set_state(
+        AdminCourseCreate.waiting_for_lesson_title
+    )
+
+    await message.answer(
+        (
+            f"📖 Введите название урока "
+            f"<b>1 из {lessons_count}</b>."
+        ),
+        parse_mode="HTML",
+        reply_markup=(
+            admin_course_create_cancel_keyboard()
+        ),
+    )
+
+@dp.message(
+    AdminCourseCreate.waiting_for_lesson_title,
+    F.text,
+)
+async def admin_course_create_lesson_title(
+    message: Message,
+    state: FSMContext,
+):
+    if message.text is None:
+        return
+
+    lesson_title = message.text.strip()
+
+    if len(lesson_title) < 2:
+        await message.answer(
+            "Название урока слишком короткое."
+        )
+        return
+
+    if len(lesson_title) > 255:
+        await message.answer(
+            "Название урока слишком длинное.\n\n"
+            "Максимум — 255 символов."
+        )
+        return
+
+    data = await state.get_data()
+
+    lessons_count = int(
+        data.get("lessons_count", 0)
+    )
+
+    current_lesson_number = int(
+        data.get("current_lesson_number", 1)
+    )
+
+    lesson_titles = list(
+        data.get("lesson_titles", [])
+    )
+
+    lesson_titles.append(lesson_title)
+
+    next_lesson_number = (
+        current_lesson_number + 1
+    )
+
+    await state.update_data(
+        lesson_titles=lesson_titles,
+        current_lesson_number=next_lesson_number,
+    )
+
+    if next_lesson_number <= lessons_count:
+        await message.answer(
+            (
+                f"✅ Название урока "
+                f"{current_lesson_number} сохранено.\n\n"
+                f"Введите название урока "
+                f"<b>{next_lesson_number} "
+                f"из {lessons_count}</b>."
+            ),
+            parse_mode="HTML",
+            reply_markup=(
+                admin_course_create_cancel_keyboard()
+            ),
+        )
+        return
+
+    await state.set_state(
+        AdminCourseCreate.waiting_for_price
+    )
+
+    await message.answer(
+        "💰 Теперь укажите цену курса "
+        "в гривнах.\n\n"
+        "Введите только число.\n\n"
+        "Например: <b>1450</b>",
+        parse_mode="HTML",
+        reply_markup=(
+            admin_course_create_cancel_keyboard()
+        ),
+    )
+@dp.message(
+    AdminCourseCreate.waiting_for_price,
+    F.text,
+)
+async def admin_course_create_price(
+    message: Message,
+    state: FSMContext,
+):
+    if message.text is None:
+        return
+
+    raw_price = (
+        message.text
+        .strip()
+        .replace(" ", "")
+    )
+
+    if not raw_price.isdigit():
+        await message.answer(
+            "Введите цену только числом.\n\n"
+            "Например: <b>1450</b>",
+            parse_mode="HTML",
+        )
+        return
+
+    price = int(raw_price)
+
+    if price < 1:
+        await message.answer(
+            "Цена должна быть больше нуля."
+        )
+        return
+
+    if price > 10_000_000:
+        await message.answer(
+            "Указана слишком большая цена."
+        )
+        return
+
+    await state.update_data(
+        course_price=price
+    )
+
+    data = await state.get_data()
+
+    course_title = str(
+        data.get("course_title", "")
+    )
+
+    lesson_titles = list(
+        data.get("lesson_titles", [])
+    )
+
+    lessons_text = "\n".join(
+        (
+            f"{position}. "
+            f"{html.escape(title)}"
+        )
+        for position, title in enumerate(
+            lesson_titles,
+            start=1,
+        )
+    )
+
+    await state.set_state(
+        AdminCourseCreate.waiting_for_confirmation
+    )
+
+    await message.answer(
+        (
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🎓 <b>НОВЫЙ КУРС</b>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Название:\n"
+            f"<b>{html.escape(course_title)}</b>\n\n"
+            f"Количество уроков: "
+            f"<b>{len(lesson_titles)}</b>\n\n"
+            f"Цена: <b>{price} грн</b>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📖 <b>УРОКИ</b>\n\n"
+            f"{lessons_text}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Создать этот курс?"
+        ),
+        parse_mode="HTML",
+        reply_markup=(
+            admin_course_create_confirmation_keyboard()
+        ),
+    )
+
+@dp.callback_query(
+    F.data == "admin_course_create_confirm"
+)
+async def admin_course_create_confirm(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    user = await check_admin(callback)
+
+    if user is None:
+        return
+
+    current_state = await state.get_state()
+
+    expected_state = (
+        AdminCourseCreate
+        .waiting_for_confirmation
+        .state
+    )
+
+    if current_state != expected_state:
+        await callback.answer(
+            "Данные создания курса устарели.",
+            show_alert=True,
+        )
+        return
+
+    data = await state.get_data()
+
+    course_title = str(
+        data.get("course_title", "")
+    ).strip()
+
+    course_price = int(
+        data.get("course_price", 0)
+    )
+
+    lesson_titles = list(
+        data.get("lesson_titles", [])
+    )
+
+    if (
+        not course_title
+        or course_price < 1
+        or not lesson_titles
+    ):
+        await callback.answer(
+            "Не удалось получить данные курса.",
+            show_alert=True,
+        )
+
+        await state.clear()
+        return
+
+    course = create_course_with_lessons(
+        title=course_title,
+        price=course_price,
+        lesson_titles=lesson_titles,
+    )
+
+    if course is None:
+        await callback.answer(
+            "Не удалось создать курс.",
+            show_alert=True,
+        )
+        return
+
+    await state.clear()
+
+    refresh_lessons()
+
+    if callback.message is not None:
+        await callback.message.answer(
+            (
+                "✅ <b>КУРС СОЗДАН</b>\n\n"
+                f"Название: "
+                f"<b>{html.escape(course.title)}</b>\n"
+                f"Цена: <b>{course.price} грн</b>\n"
+                f"Уроков: "
+                f"<b>{len(lesson_titles)}</b>\n\n"
+                "Теперь можно открыть редактор "
+                "уроков и добавить видео, "
+                "описания и PDF."
+            ),
+            parse_mode="HTML",
+            reply_markup=admin_course_keyboard(
+                course.id
+            ),
+        )
+
+    await callback.answer(
+        "Курс успешно создан."
+    )
+
+@dp.callback_query(
+    F.data == "admin_course_create_cancel"
+)
+async def admin_course_create_cancel(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    user = await check_admin(callback)
+
+    if user is None:
+        return
+
+    await state.clear()
+
+    courses = get_all_courses()
+
+    await safe_edit(
+        callback,
+        "❌ Создание курса отменено.",
+        reply_markup=admin_courses_keyboard(
+            courses
+        ),
+    )
+
 
 @dp.callback_query(F.data == "admin_courses")
 async def admin_courses(callback: CallbackQuery):
     user = await check_admin(callback)
+
     if user is None:
         return
+
+    courses = get_all_courses()
+
+    text = (
+        "📚 <b>УПРАВЛЕНИЕ КУРСАМИ</b>\n\n"
+        "Выберите существующий курс "
+        "или создайте новый."
+    )
+
+    if not courses:
+        text = (
+            "📚 <b>УПРАВЛЕНИЕ КУРСАМИ</b>\n\n"
+            "Курсов пока нет.\n\n"
+            "Нажмите «Добавить курс»."
+        )
+
     await safe_edit(
         callback,
-        "📚 Управление курсами\n\nВыберите курс:",
-        reply_markup=admin_courses_keyboard(),
+        text,
+        parse_mode="HTML",
+        reply_markup=admin_courses_keyboard(
+            courses
+        ),
     )
+
 
 
 # @dp.callback_query(F.data.startswith("create_payment:"))
@@ -1922,17 +2552,250 @@ async def create_payment(callback: CallbackQuery):
 
 
 
-@dp.callback_query(F.data.startswith("admin_course:"))
-async def admin_course(callback: CallbackQuery):
+# @dp.callback_query(F.data.startswith("admin_course:"))
+# async def admin_course(callback: CallbackQuery):
+#     user = await check_admin(callback)
+#     if user is None or callback.data is None:
+#         return
+#     course_id = int(callback.data.split(":")[1])
+#     course_lessons = [lesson for lesson in lessons if lesson.course_id == course_id]
+#     await safe_edit(
+#         callback,
+#         f"🎓 {COURSE_TITLE}\n\nЦена: {COURSE_PRICE} грн\nСтатус: активен\nУроков: {len(course_lessons)}",
+#         reply_markup=admin_course_keyboard(course_id),
+#     )
+
+@dp.callback_query(
+    F.data.startswith("admin_course:")
+)
+async def admin_course(
+    callback: CallbackQuery,
+):
     user = await check_admin(callback)
-    if user is None or callback.data is None:
+
+    if (
+        user is None
+        or callback.data is None
+    ):
         return
-    course_id = int(callback.data.split(":")[1])
-    course_lessons = [lesson for lesson in lessons if lesson.course_id == course_id]
+
+    try:
+        course_id = int(
+            callback.data.split(":", 1)[1]
+        )
+    except (IndexError, ValueError):
+        await callback.answer(
+            "Некорректный идентификатор курса.",
+            show_alert=True,
+        )
+        return
+
+    course = get_course_by_id(
+        course_id
+    )
+
+    if course is None:
+        await callback.answer(
+            "Курс не найден.",
+            show_alert=True,
+        )
+        return
+
+    course_lessons = [
+        lesson
+        for lesson in lessons
+        if lesson.course_id == course_id
+    ]
+
+    active_status = (
+        "активен"
+        if course.is_active
+        else "отключён"
+    )
+
+    visible_status = (
+        "виден ученикам"
+        if course.is_visible
+        else "скрыт от учеников"
+    )
+
     await safe_edit(
         callback,
-        f"🎓 {COURSE_TITLE}\n\nЦена: {COURSE_PRICE} грн\nСтатус: активен\nУроков: {len(course_lessons)}",
-        reply_markup=admin_course_keyboard(course_id),
+        (
+            f"🎓 <b>{html.escape(course.title)}</b>\n\n"
+            f"💰 Цена: <b>{course.price} грн</b>\n"
+            f"📖 Уроков: <b>{len(course_lessons)}</b>\n"
+            f"⚙️ Статус: <b>{active_status}</b>\n"
+            f"👁 Отображение: <b>{visible_status}</b>"
+        ),
+        parse_mode="HTML",
+        reply_markup=admin_course_keyboard(
+            course_id
+        ),
+    )
+@dp.callback_query(
+    F.data.startswith("admin_course_price:")
+)
+async def admin_course_price(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    user = await check_admin(callback)
+
+    if (
+        user is None
+        or callback.data is None
+        or callback.message is None
+    ):
+        return
+
+    try:
+        course_id = int(
+            callback.data.split(":", 1)[1]
+        )
+    except (IndexError, ValueError):
+        await callback.answer(
+            "Не удалось определить курс.",
+            show_alert=True,
+        )
+        return
+
+    course = get_course_by_id(
+        course_id
+    )
+
+    if course is None:
+        await callback.answer(
+            "Курс не найден.",
+            show_alert=True,
+        )
+        return
+
+    await state.clear()
+
+    await state.update_data(
+        editing_course_id=course_id
+    )
+
+    await state.set_state(
+        AdminCourseEdit.waiting_for_price
+    )
+
+    await callback.message.answer(
+        (
+            "💰 <b>ИЗМЕНЕНИЕ ЦЕНЫ</b>\n\n"
+            f"Курс:\n"
+            f"<b>{html.escape(course.title)}</b>\n\n"
+            f"Текущая цена: "
+            f"<b>{course.price} грн</b>\n\n"
+            "Введите новую цену только числом.\n\n"
+            "Например: <b>2000</b>"
+        ),
+        parse_mode="HTML",
+    )
+
+    await callback.answer()
+
+@dp.message(
+    AdminCourseEdit.waiting_for_price,
+    F.text,
+)
+async def save_admin_course_price(
+    message: Message,
+    state: FSMContext,
+):
+    if (
+        message.from_user is None
+        or message.text is None
+    ):
+        return
+
+    user = get_user_from_telegram(
+        message.from_user
+    )
+
+    if not user.is_admin:
+        await message.answer(
+            "⛔ Нет доступа."
+        )
+        await state.clear()
+        return
+
+    raw_price = (
+        message.text
+        .strip()
+        .replace(" ", "")
+    )
+
+    if not raw_price.isdigit():
+        await message.answer(
+            "Введите цену только числом.\n\n"
+            "Например: <b>2000</b>",
+            parse_mode="HTML",
+        )
+        return
+
+    new_price = int(raw_price)
+
+    if new_price < 1:
+        await message.answer(
+            "Цена должна быть больше нуля."
+        )
+        return
+
+    data = await state.get_data()
+
+    course_id = data.get(
+        "editing_course_id"
+    )
+
+    if course_id is None:
+        await message.answer(
+            "Не удалось определить курс."
+        )
+        await state.clear()
+        return
+
+    updated = update_course_price(
+        course_id=int(course_id),
+        price=new_price,
+    )
+
+    if not updated:
+        await message.answer(
+            "Не удалось изменить цену."
+        )
+        await state.clear()
+        return
+
+    course = get_course_by_id(
+        int(course_id)
+    )
+
+    await state.clear()
+
+    await message.answer(
+        (
+            "✅ <b>ЦЕНА ОБНОВЛЕНА</b>\n\n"
+            f"Курс:\n"
+            f"<b>{html.escape(course.title)}</b>\n\n"
+            f"Новая цена: "
+            f"<b>{course.price} грн</b>"
+        ),
+        parse_mode="HTML",
+        reply_markup=admin_course_keyboard(
+            int(course_id)
+        ),
+    )
+@dp.message(
+    AdminCourseEdit.waiting_for_price
+)
+async def wrong_admin_course_price(
+    message: Message,
+):
+    await message.answer(
+        "Отправьте новую цену "
+        "обычным текстовым сообщением."
     )
 
 
@@ -2212,6 +3075,143 @@ async def admin_lesson_preview(callback: CallbackQuery):
         return
     await send_lesson(callback, lesson)
 
+@dp.callback_query(
+    F.data.startswith("admin_lesson_delete:")
+)
+async def admin_lesson_delete_request(
+    callback: CallbackQuery,
+):
+    user = await check_admin(callback)
+
+    if (
+        user is None
+        or callback.data is None
+    ):
+        return
+
+    try:
+        lesson_id = int(
+            callback.data.split(":", 1)[1]
+        )
+    except (IndexError, ValueError):
+        await callback.answer(
+            "Не удалось определить урок.",
+            show_alert=True,
+        )
+        return
+
+    lesson = get_lesson_by_id(
+        lesson_id
+    )
+
+    if lesson is None:
+        await callback.answer(
+            "Урок не найден.",
+            show_alert=True,
+        )
+        return
+
+    await safe_edit(
+        callback,
+        (
+            "⚠️ <b>УДАЛЕНИЕ УРОКА</b>\n\n"
+            f"Курс ID: <b>{lesson.course_id}</b>\n\n"
+            f"Урок:\n"
+            f"<b>{lesson.position}. "
+            f"{html.escape(lesson.title)}</b>\n\n"
+            "Будут также удалены записи прогресса "
+            "учеников по этому уроку.\n\n"
+            "После удаления остальные уроки будут "
+            "автоматически перенумерованы.\n\n"
+            "Это действие нельзя отменить."
+        ),
+        parse_mode="HTML",
+        reply_markup=(
+            admin_lesson_delete_confirmation_keyboard(
+                lesson_id=lesson.id,
+                course_id=lesson.course_id,
+            )
+        ),
+    )
+
+@dp.callback_query(
+    F.data.startswith(
+        "admin_lesson_delete_confirm:"
+    )
+)
+async def admin_lesson_delete_confirm(
+    callback: CallbackQuery,
+):
+    user = await check_admin(callback)
+
+    if (
+        user is None
+        or callback.data is None
+    ):
+        return
+
+    try:
+        lesson_id = int(
+            callback.data.split(":", 1)[1]
+        )
+    except (IndexError, ValueError):
+        await callback.answer(
+            "Не удалось определить урок.",
+            show_alert=True,
+        )
+        return
+
+    lesson = get_lesson_by_id(
+        lesson_id
+    )
+
+    if lesson is None:
+        await callback.answer(
+            "Урок уже удалён или не найден.",
+            show_alert=True,
+        )
+        return
+
+    lesson_title = lesson.title
+
+    deleted, course_id = delete_lesson(
+        lesson_id
+    )
+
+    if not deleted or course_id is None:
+        await callback.answer(
+            "Не удалось удалить урок.",
+            show_alert=True,
+        )
+        return
+
+    refresh_lessons()
+
+    course_lessons = [
+        item
+        for item in lessons
+        if item.course_id == course_id
+    ]
+
+    await safe_edit(
+        callback,
+        (
+            "✅ <b>УРОК УДАЛЁН</b>\n\n"
+            f"<b>{html.escape(lesson_title)}</b>\n\n"
+            "Оставшиеся уроки перенумерованы."
+        ),
+        parse_mode="HTML",
+        reply_markup=admin_lessons_keyboard(
+            course_lessons=course_lessons,
+            course_id=course_id,
+        ),
+    )
+
+    await callback.answer(
+        "Урок удалён."
+    )
+
+
 
 @dp.callback_query(F.data.startswith("admin_lesson:"))
 async def admin_lesson(callback: CallbackQuery):
@@ -2231,6 +3231,161 @@ async def admin_lesson(callback: CallbackQuery):
         reply_markup=admin_lesson_keyboard(lesson.id, lesson.course_id),
     )
 
+@dp.callback_query(
+    F.data.startswith("admin_course_delete:")
+)
+async def admin_course_delete_request(
+    callback: CallbackQuery,
+):
+    user = await check_admin(callback)
+
+    if (
+        user is None
+        or callback.data is None
+    ):
+        return
+
+    try:
+        course_id = int(
+            callback.data.split(":", 1)[1]
+        )
+    except (IndexError, ValueError):
+        await callback.answer(
+            "Не удалось определить курс.",
+            show_alert=True,
+        )
+        return
+
+    if course_id == COURSE_ID:
+        await callback.answer(
+
+            "Основной курс пока нельзя удалить, "
+
+            "поскольку пользовательская часть платформы "
+
+            "ещё привязана к нему.",
+
+            show_alert=True,
+
+        )
+
+        return
+
+    course = get_course_by_id(
+        course_id
+    )
+
+
+
+    if course is None:
+        await callback.answer(
+            "Курс не найден.",
+            show_alert=True,
+        )
+        return
+
+    course_lessons = [
+        lesson
+        for lesson in lessons
+        if lesson.course_id == course_id
+    ]
+
+    await safe_edit(
+        callback,
+        (
+            "⚠️ <b>УДАЛЕНИЕ КУРСА</b>\n\n"
+            f"Курс:\n"
+            f"<b>{html.escape(course.title)}</b>\n\n"
+            f"Уроков: <b>{len(course_lessons)}</b>\n"
+            f"Цена: <b>{course.price} грн</b>\n\n"
+            "При полном удалении будут удалены:\n\n"
+            "• сам курс;\n"
+            "• все его уроки;\n"
+            "• прогресс учеников;\n"
+            "• покупки и выданные доступы;\n"
+            "• платежи;\n"
+            "• отзывы.\n\n"
+            "⚠️ Это действие нельзя отменить."
+        ),
+        parse_mode="HTML",
+        reply_markup=(
+            admin_course_delete_confirmation_keyboard(
+                course.id
+            )
+        ),
+    )
+
+@dp.callback_query(
+    F.data.startswith(
+        "admin_course_delete_confirm:"
+    )
+)
+async def admin_course_delete_confirm(
+    callback: CallbackQuery,
+):
+    user = await check_admin(callback)
+
+    if (
+        user is None
+        or callback.data is None
+    ):
+        return
+
+    try:
+        course_id = int(
+            callback.data.split(":", 1)[1]
+        )
+    except (IndexError, ValueError):
+        await callback.answer(
+            "Не удалось определить курс.",
+            show_alert=True,
+        )
+        return
+
+    course = get_course_by_id(
+        course_id
+    )
+
+    if course is None:
+        await callback.answer(
+            "Курс уже удалён или не найден.",
+            show_alert=True,
+        )
+        return
+
+    course_title = course.title
+
+    deleted = delete_course(
+        course_id
+    )
+
+    if not deleted:
+        await callback.answer(
+            "Не удалось удалить курс.",
+            show_alert=True,
+        )
+        return
+
+    refresh_lessons()
+
+    courses = get_all_courses()
+
+    await safe_edit(
+        callback,
+        (
+            "✅ <b>КУРС УДАЛЁН</b>\n\n"
+            f"<b>{html.escape(course_title)}</b>\n\n"
+            "Все связанные данные удалены."
+        ),
+        parse_mode="HTML",
+        reply_markup=admin_courses_keyboard(
+            courses
+        ),
+    )
+
+    await callback.answer(
+        "Курс удалён."
+    )
 
 @dp.callback_query(F.data == "admin_news")
 async def admin_news(callback: CallbackQuery):
