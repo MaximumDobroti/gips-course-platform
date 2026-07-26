@@ -94,7 +94,7 @@ if BOT_TOKEN is None:
     raise RuntimeError("BOT_TOKEN is not set in .env")
 COURSE_ID = 1
 
-COURSE_TITLE = "Монтаж гіпсокартону з нуля"
+COURSE_TITLE = "Теоретичний курс по Монтажу гіпсокартону з нуля"
 
 COURSE_PRICE = 1000
 
@@ -179,7 +179,7 @@ def purchase_success_keyboard():
 
         text="▶️ Розпочати навчання",
 
-        callback_data="start_learning",
+        callback_data="profile",
 
     )
 
@@ -307,8 +307,16 @@ def get_lesson_by_id(lesson_id: int):
     return next((lesson for lesson in lessons if lesson.id == lesson_id), None)
 
 
-def get_lesson_by_position(position: int):
-    return next((lesson for lesson in lessons if lesson.position == position), None)
+def get_lesson_by_position(position: int, course_id: int | None = None):
+    return next(
+        (
+            lesson
+            for lesson in lessons
+            if lesson.position == position
+            and (course_id is None or lesson.course_id == course_id)
+        ),
+        None,
+    )
 
 
 def build_progress_bar(completed_lessons: int, total_lessons: int) -> str:
@@ -349,19 +357,16 @@ async def check_admin(callback: CallbackQuery):
     return user
 
 
-async def check_course_access(callback: CallbackQuery):
+async def check_course_access(callback: CallbackQuery, course_id: int):
     user = get_user_from_telegram(callback.from_user)
-    if not user_has_active_course(user.id, COURSE_ID):
+    course = get_course_by_id(course_id)
+    if course is None or not course.is_active:
+        await callback.answer("Курс не знайдено.", show_alert=True)
+        return None
+    if not user_has_active_course(user.id, course_id):
         await callback.answer(
-
-            "🔒 Цей курс ще не придбано. "
-
-            "Відкрийте особистий кабінет та натисніть "
-
-            "«Придбати курс».",
-
+            "🔒 Цей курс ще не придбано. Відкрийте особистий кабінет та натисніть «Придбати курс».",
             show_alert=True,
-
         )
         return None
     return user
@@ -414,169 +419,84 @@ async def show_profile(
     callback: CallbackQuery | None = None,
     message: Message | None = None,
 ) -> None:
-    telegram_user = (
-        callback.from_user
-        if callback is not None
-        else message.from_user
-        if message is not None
-        else None
-    )
-
+    telegram_user = callback.from_user if callback else message.from_user if message else None
     if telegram_user is None:
         return
 
     user = get_user_from_telegram(telegram_user)
+    courses = [c for c in get_all_courses() if c.is_active and c.is_visible]
+    blocks = []
 
-    purchased_courses_count = get_purchased_courses_count(
-        user_id=user.id,
-    )
-
-    has_course_access = user_has_active_course(
-        user_id=user.id,
-        course_id=COURSE_ID,
-    )
-
-    username_line = (
-        f"🔗 @{user.username}\n"
-        if user.username
-        else ""
-    )
-
-    if has_course_access:
-        progress = get_course_progress(
-            user_id=user.id,
-            course_id=COURSE_ID,
-        )
-
-        completed_lessons = progress["completed"]
-        total_lessons = progress["total"]
-        progress_percent = progress["percent"]
-
-        progress_bar = build_progress_bar(
-            completed_lessons,
-            total_lessons,
-        )
-
-        next_lesson = get_next_available_lesson(
-            user_id=user.id,
-            course_id=COURSE_ID,
-        )
-
-        if next_lesson is None:
-            status_line = "🏆 Курс успішно завершено"
+    for course in courses:
+        course_lessons = [l for l in lessons if l.course_id == course.id and l.is_active]
+        if user_has_active_course(user.id, course.id):
+            progress = get_course_progress(user.id, course.id)
+            next_lesson = get_next_available_lesson(user.id, course.id)
+            status = "🏆 Курс успішно завершено" if next_lesson is None else f"▶️ Наступний урок: {next_lesson.position}. {next_lesson.title}"
+            blocks.append(
+                "🟢 <b>ДОСТУПНИЙ КУРС</b>\n\n"
+                f"📦 <b>{html.escape(course.title)}</b>\n\n"
+                f"{build_progress_bar(progress['completed'], progress['total'])}\n"
+                f"Прогрес: {progress['percent']}%\n\n"
+                f"✅ Завершено: {progress['completed']} із {progress['total']} уроків\n"
+                f"{html.escape(status)}"
+            )
         else:
-            status_line = (
-                f"▶️ Наступний урок: "
-                f"{next_lesson.position}. {next_lesson.title}"
+            price = "🎁 Безкоштовно" if course.is_free or course.price == 0 else f"💳 Вартість: {course.price} грн"
+            subtitle = f"\n{html.escape(course.subtitle)}\n" if course.subtitle else ""
+            blocks.append(
+                "🔒 <b>КУРС НЕ ПРИДБАНО</b>\n\n"
+                f"📦 <b>{html.escape(course.title)}</b>\n"
+                f"{subtitle}\n"
+                f"🎥 {len(course_lessons)} відеоуроків\n"
+                "📄 PDF-матеріали\n♾ Довічний доступ\n\n"
+                f"{price}"
             )
 
-        course_block = (
-            "🟢 ДОСТУПНИЙ КУРС\n\n"
-            f"📦 {COURSE_TITLE}\n\n"
-            f"{progress_bar}\n"
-            f"Прогрес: {progress_percent}%\n\n"
-            f"✅ Завершено: {completed_lessons} із "
-            f"{total_lessons} уроків\n"
-            f"{status_line}"
-        )
-
-    else:
-        course_block = (
-            "🔒 КУРС 1 - НЕ ПРИДБАНО\n\n"
-            f"📦 {COURSE_TITLE}\n\n"
-            f"🎥 {len(lessons)} відеоуроків\n"
-            "📄 PDF-матеріали\n"
-            "♾ Довічний доступ\n\n"
-            f"💳 Вартість: {COURSE_PRICE} грн"
-        )
-
+    courses_text = "\n\n━━━━━━━━━━━━━━━━━━━━━━\n\n".join(blocks) if blocks else (
+        "📚 <b>КУРСІВ ПОКИ НЕМАЄ</b>\n\nНові курси з’являться тут одразу після публікації."
+    )
+    username = f"🔗 @{user.username}\n" if user.username else ""
     text = (
-        "👤 ОСОБИСТИЙ КАБІНЕТ\n\n"
-        f"Вітаємо, {user.first_name or 'учню'} 👋\n"
-        f"{username_line}\n"
+        "👤 <b>ОСОБИСТИЙ КАБІНЕТ</b>\n\n"
+        f"Вітаємо, {html.escape(user.first_name or 'учню')} 👋\n{username}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n📊 <b>ВАША СТАТИСТИКА</b>\n\n"
+        f"🎓 Придбано курсів: {get_purchased_courses_count(user.id)}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📊 ВАША СТАТИСТИКА\n\n"
-        f"🎓 Придбано курсів: {purchased_courses_count}\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{course_block}\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🚧 КУРС 2\n\n"
-        "Новий курс готується до запуску.\n"
-        "Стежте за новинами платформи.\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🚧 КУРС 3\n\n"
-        "У розробці"
+        f"{courses_text}"
     )
-
-    keyboard = profile_courses_keyboard(
-        has_course_access=has_course_access,
-        is_admin=user.is_admin,
-    )
-
-    if callback is not None:
-        await safe_edit(
-            callback,
-            text,
-            reply_markup=keyboard,
-        )
-    elif message is not None:
-        await message.answer(
-            text,
-            reply_markup=keyboard,
-        )
+    keyboard = profile_courses_keyboard(user.id, courses, user.is_admin)
+    if callback:
+        await safe_edit(callback, text, reply_markup=keyboard, parse_mode="HTML")
+    elif message:
+        await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
 def main_menu(is_admin: bool = False):
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="📢 Новости", callback_data="student_news")
-    keyboard.button(text="📚 Начать обучение", callback_data="start_learning")
+    keyboard.button(text="📚 Мої курси", callback_data="profile")
     keyboard.button(text="👤 Мой профиль", callback_data="profile")
     if is_admin:
         keyboard.button(text="👨\u200d💼 Админ-панель", callback_data="admin_panel")
     keyboard.adjust(1)
     return keyboard.as_markup()
 
-def profile_courses_keyboard(
-    has_course_access: bool,
-    is_admin: bool = False,
-):
+def profile_courses_keyboard(user_id: int, courses, is_admin: bool = False):
     keyboard = InlineKeyboardBuilder()
-
-    if has_course_access:
-        keyboard.button(
-            text="▶️ Продовжити навчання",
-            callback_data="start_learning",
-        )
-
-        keyboard.button(
-            text="📚 Програма курсу",
-            callback_data="lessons",
-        )
-
-        keyboard.button(
-            text="⭐ Мій відгук",
-            callback_data=f"profile_review:{COURSE_ID}",
-        )
-
-    else:
-        keyboard.button(
-            text=f"💳 Придбати курс — {COURSE_PRICE} грн",
-            callback_data=f"buy_course:{COURSE_ID}",
-        )
-
-    keyboard.button(
-        text="📢 Новини",
-        callback_data="student_news",
-    )
-
+    for course in courses:
+        title = course.title[:30] + ("…" if len(course.title) > 30 else "")
+        if user_has_active_course(user_id, course.id):
+            keyboard.button(text=f"▶️ Продовжити: {title}", callback_data=f"start_learning:{course.id}")
+            keyboard.button(text=f"📚 Програма: {title}", callback_data=f"lessons:{course.id}")
+            keyboard.button(text=f"⭐ Відгук: {title}", callback_data=f"profile_review:{course.id}")
+        else:
+            price = "безкоштовно" if course.is_free or course.price == 0 else f"{course.price} грн"
+            keyboard.button(text=f"💳 Придбати: {title} — {price}", callback_data=f"buy_course:{course.id}")
+    keyboard.button(text="📢 Новини", callback_data="student_news")
     if is_admin:
-        keyboard.button(
-            text="👨‍💼 Панель адміністратора",
-            callback_data="admin_panel",
-        )
-
+        keyboard.button(text="👨‍💼 Панель адміністратора", callback_data="admin_panel")
     keyboard.adjust(1)
     return keyboard.as_markup()
-
 
 def user_review_empty_keyboard(course_id: int):
     keyboard = InlineKeyboardBuilder()
@@ -610,7 +530,7 @@ def user_review_actions_keyboard(course_id: int, review_id: int):
 
     keyboard.button(
         text="🗑 Видалити відгук",
-        callback_data=f"user_review_delete:{review_id}",
+        callback_data=f"user_review_delete:{course_id}:{review_id}",
     )
 
     keyboard.button(
@@ -641,13 +561,13 @@ def review_after_course_keyboard(course_id: int):
 
 
 
-def lesson_only_keyboard(lesson_position: int):
+def lesson_only_keyboard(lesson):
     keyboard = InlineKeyboardBuilder()
-    if lesson_position < len(lessons):
-        button_text = "✅ Завершити урок"
-    else:
-        button_text = "🏁 Завершити курс"
-    keyboard.button(text=button_text, callback_data=f"complete:{lesson_position}")
+    course_lessons = [l for l in lessons if l.course_id == lesson.course_id and l.is_active]
+    keyboard.button(
+        text="🏁 Завершити курс" if lesson.position >= len(course_lessons) else "✅ Завершити урок",
+        callback_data=f"complete:{lesson.id}",
+    )
     keyboard.adjust(1)
     return keyboard.as_markup()
 
@@ -660,48 +580,37 @@ def announcement_image_keyboard():
     return keyboard.as_markup()
 
 
-def navigation_keyboard():
+def navigation_keyboard(course_id: int):
     keyboard = InlineKeyboardBuilder()
-    keyboard.button(text="📚 Все уроки", callback_data="lessons")
-    keyboard.button(text="👤 Мой профиль", callback_data="profile")
+    keyboard.button(text="📚 Програма курсу", callback_data=f"lessons:{course_id}")
+    keyboard.button(text="👤 Особистий кабінет", callback_data="profile")
     keyboard.adjust(1)
     return keyboard.as_markup()
 
-def navigation_keyboard():
 
+def lesson_keyboard(lesson):
     keyboard = InlineKeyboardBuilder()
-
+    course_lessons = [l for l in lessons if l.course_id == lesson.course_id and l.is_active]
     keyboard.button(
-
-        text="📚 Програма курсу",
-
-        callback_data="lessons",
-
+        text="🏁 Завершити курс" if lesson.position >= len(course_lessons) else "▶️ Відкрити наступний урок",
+        callback_data=f"complete:{lesson.id}",
     )
-
-    keyboard.button(
-
-        text="👤 Особистий кабінет",
-
-        callback_data="profile",
-
-    )
-
+    keyboard.button(text="📚 Всі уроки", callback_data=f"lessons:{lesson.course_id}")
     keyboard.adjust(1)
-
     return keyboard.as_markup()
 
 
-
-
-def lesson_keyboard(lesson_position: int):
+def lessons_list_keyboard(course_lessons, completed_lesson_ids: set[int], available_lesson_id: int | None):
     keyboard = InlineKeyboardBuilder()
-    if lesson_position < len(lessons):
-        button_text = "▶️ Відкрити наступний урок"
-    else:
-        button_text = "🏁 Завершити курс"
-    keyboard.button(text=button_text, callback_data=f"complete:{lesson_position}")
-    keyboard.button(text="📚 Все уроки", callback_data="lessons")
+    for lesson in course_lessons:
+        if lesson.id in completed_lesson_ids:
+            text, data = f"✅ {lesson.position}. {lesson.title}", f"open_lesson:{lesson.id}"
+        elif lesson.id == available_lesson_id:
+            text, data = f"▶️ {lesson.position}. {lesson.title}", f"open_lesson:{lesson.id}"
+        else:
+            text, data = f"🔒 {lesson.position}. {lesson.title}", f"locked_lesson:{lesson.id}"
+        keyboard.button(text=text, callback_data=data)
+    keyboard.button(text="⬅️ До особистого кабінету", callback_data="profile")
     keyboard.adjust(1)
     return keyboard.as_markup()
 
@@ -861,15 +770,43 @@ def admin_students_keyboard(
 
 def admin_student_keyboard(
     student_id: int,
-    has_course_access: bool,
+    courses,
     page: int = 1,
 ):
     keyboard = InlineKeyboardBuilder()
 
-    if not has_course_access:
+    access_buttons_count = 0
+
+    for course in courses:
+        has_access = user_has_active_course(
+            user_id=student_id,
+            course_id=course.id,
+        )
+
+        if has_access:
+            continue
+
+        short_title = course.title
+
+        if len(short_title) > 28:
+            short_title = short_title[:28] + "…"
+
         keyboard.button(
-            text="🔓 Видати доступ до курсу",
-            callback_data=f"admin_grant_course:{student_id}:{page}",
+            text=f"🔓 Видати доступ: {short_title}",
+            callback_data=(
+                f"admin_grant_course:"
+                f"{student_id}:"
+                f"{course.id}:"
+                f"{page}"
+            ),
+        )
+
+        access_buttons_count += 1
+
+    if courses and access_buttons_count == 0:
+        keyboard.button(
+            text="✅ Доступ до всіх курсів видано",
+            callback_data="admin_student_all_courses_access",
         )
 
     keyboard.button(
@@ -883,7 +820,10 @@ def admin_student_keyboard(
     )
 
     keyboard.adjust(1)
+
     return keyboard.as_markup()
+
+
 
 def admin_courses_keyboard(courses):
     keyboard = InlineKeyboardBuilder()
@@ -948,28 +888,12 @@ def admin_course_keyboard(course_id: int):
 
 
 
-def buy_course_keyboard(course_id: int):
-
+def buy_course_keyboard(course):
     keyboard = InlineKeyboardBuilder()
-
-    keyboard.button(
-
-        text=f"💳 Оплатити {COURSE_PRICE} грн",
-
-        callback_data=f"create_payment:{course_id}",
-
-    )
-
-    keyboard.button(
-
-        text="⬅️ Повернутися до кабінету",
-
-        callback_data="profile",
-
-    )
-
+    price = "безкоштовно" if course.is_free or course.price == 0 else f"{course.price} грн"
+    keyboard.button(text=f"💳 Оплатити {price}", callback_data=f"create_payment:{course.id}")
+    keyboard.button(text="⬅️ Повернутися до кабінету", callback_data="profile")
     keyboard.adjust(1)
-
     return keyboard.as_markup()
 
 
@@ -1051,9 +975,7 @@ async def send_lesson(callback: CallbackQuery, lesson):
             caption=caption,
             parse_mode="HTML",
             protect_content=True,
-            reply_markup=lesson_only_keyboard(
-                lesson.position
-            ),
+            reply_markup=lesson_only_keyboard(lesson),
         )
 
     else:
@@ -1063,15 +985,13 @@ async def send_lesson(callback: CallbackQuery, lesson):
             + "\n\n⚠️ Відео ще не завантажено.",
             parse_mode="HTML",
             protect_content=True,
-            reply_markup=lesson_only_keyboard(
-                lesson.position
-            ),
+            reply_markup=lesson_only_keyboard(lesson),
         )
 
     await callback.message.answer(
         "📚 <b>Навігація</b>",
         parse_mode="HTML",
-        reply_markup=navigation_keyboard(),
+        reply_markup=navigation_keyboard(lesson.course_id),
     )
 
 
@@ -1106,11 +1026,9 @@ async def student_news(callback: CallbackQuery):
             ),
             parse_mode="HTML",
             reply_markup=profile_courses_keyboard(
-                has_course_access=user_has_active_course(
-                    user_id=user.id,
-                    course_id=COURSE_ID,
-                ),
-                is_admin=user.is_admin,
+                user.id,
+                [c for c in get_all_courses() if c.is_active and c.is_visible],
+                user.is_admin,
             ),
         )
         return
@@ -1160,16 +1078,12 @@ async def student_news(callback: CallbackQuery):
                 protect_content=True,
             )
 
-    has_course_access = user_has_active_course(
-        user_id=user.id,
-        course_id=COURSE_ID,
-    )
-
     await callback.message.answer(
         "Оберіть подальшу дію:",
         reply_markup=profile_courses_keyboard(
-            has_course_access=has_course_access,
-            is_admin=user.is_admin,
+            user.id,
+            [c for c in get_all_courses() if c.is_active and c.is_visible],
+            user.is_admin,
         ),
     )
 
@@ -1177,212 +1091,147 @@ async def student_news(callback: CallbackQuery):
 
 
 
-@dp.callback_query(F.data == "start_learning")
+@dp.callback_query(F.data.startswith("start_learning:"))
 async def start_learning(callback: CallbackQuery):
-    user = await check_course_access(callback)
+    if callback.data is None:
+        return
+    course_id = int(callback.data.split(":")[1])
+    user = await check_course_access(callback, course_id)
     if user is None:
         return
-    lesson = get_next_available_lesson(user_id=user.id, course_id=COURSE_ID)
+    lesson = get_next_available_lesson(user.id, course_id)
     if lesson is None:
-        await safe_edit(
-            callback,
-            "🎉 Вы уже прошли весь курс!",
-            reply_markup=main_menu(is_admin=user.is_admin),
-        )
+        await callback.answer("🎉 Ви вже пройшли весь курс!", show_alert=True)
         return
     await send_lesson(callback, lesson)
 
 
-@dp.callback_query(F.data == "lessons")
+@dp.callback_query(F.data.startswith("lessons:"))
 async def show_lessons(callback: CallbackQuery):
-    user = await check_course_access(callback)
-
+    if callback.data is None:
+        return
+    course_id = int(callback.data.split(":")[1])
+    user = await check_course_access(callback, course_id)
     if user is None:
         return
-
-    completed_ids = get_completed_lesson_ids(
-        user_id=user.id,
-        course_id=COURSE_ID,
+    course = get_course_by_id(course_id)
+    course_lessons = sorted(
+        [l for l in lessons if l.course_id == course_id and l.is_active],
+        key=lambda l: (l.position, l.id),
     )
-
-    next_lesson = get_next_available_lesson(
-        user_id=user.id,
-        course_id=COURSE_ID,
-    )
-
-    available_lesson_id = (
-        next_lesson.id
-        if next_lesson is not None
-        else None
-    )
-
-    progress = get_course_progress(
-        user_id=user.id,
-        course_id=COURSE_ID,
-    )
-
+    completed_ids = get_completed_lesson_ids(user.id, course_id)
+    next_lesson = get_next_available_lesson(user.id, course_id)
+    progress = get_course_progress(user.id, course_id)
     await safe_edit(
         callback,
-        (
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📚 <b>ПРОГРАМА КУРСУ</b>\n\n"
-            f"<b>{COURSE_TITLE}</b>\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"Прогрес: {progress['percent']}%\n"
-            f"Завершено: {progress['completed']} із "
-            f"{progress['total']} уроків\n\n"
-            "✅ — завершено\n"
-            "▶️ — доступно зараз\n"
-            "🔒 — ще закрито\n\n"
-            "Оберіть потрібний урок:"
-        ),
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n📚 <b>ПРОГРАМА КУРСУ</b>\n\n"
+        f"<b>{html.escape(course.title)}</b>\n\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Прогрес: {progress['percent']}%\nЗавершено: {progress['completed']} із {progress['total']} уроків\n\n"
+        "✅ — завершено\n▶️ — доступно зараз\n🔒 — ще закрито\n\nОберіть потрібний урок:",
         parse_mode="HTML",
-        reply_markup=lessons_list_keyboard(
-            lessons,
-            completed_ids,
-            available_lesson_id,
-        ),
+        reply_markup=lessons_list_keyboard(course_lessons, completed_ids, next_lesson.id if next_lesson else None),
     )
 
+@dp.callback_query(
 
+    F.data == "admin_student_all_courses_access"
 
-@dp.callback_query(F.data.startswith("open_lesson:"))
-async def open_lesson(callback: CallbackQuery):
-    user = await check_course_access(callback)
-    if user is None or callback.data is None:
-        return
-    lesson_position = int(callback.data.split(":")[1])
-    lesson = get_lesson_by_position(lesson_position)
-    if lesson is None:
-        await callback.answer("Урок не найден.", show_alert=True)
-        return
-    available = is_lesson_available(user_id=user.id, lesson_id=lesson.id)
-    completed = is_lesson_completed(user_id=user.id, lesson_id=lesson.id)
-    if not available and (not completed):
-        await callback.answer(
-            "🔒 Этот урок пока закрыт. Сначала пройдите предыдущий.", show_alert=True
-        )
-        return
-    await send_lesson(callback, lesson)
+)
 
+async def admin_student_all_courses_access(
 
-@dp.callback_query(F.data.startswith("locked_lesson:"))
+    callback: CallbackQuery,
 
-async def locked_lesson(callback: CallbackQuery):
+):
 
     await callback.answer(
 
-        "🔒 Цей урок поки що закритий.\n\n"
-
-        "Спочатку завершіть попередній урок.",
+        "Користувач уже має доступ до всіх курсів.",
 
         show_alert=True,
 
     )
 
 
+@dp.callback_query(F.data.startswith("open_lesson:"))
+async def open_lesson(callback: CallbackQuery):
+    if callback.data is None:
+        return
+    lesson = get_lesson_by_id(int(callback.data.split(":")[1]))
+    if lesson is None:
+        await callback.answer("Урок не знайдено.", show_alert=True)
+        return
+    user = await check_course_access(callback, lesson.course_id)
+    if user is None:
+        return
+    if not is_lesson_available(user.id, lesson.id) and not is_lesson_completed(user.id, lesson.id):
+        await callback.answer("🔒 Спочатку пройдіть попередній урок.", show_alert=True)
+        return
+    await send_lesson(callback, lesson)
+
+
+@dp.callback_query(F.data.startswith("locked_lesson:"))
+async def locked_lesson(callback: CallbackQuery):
+    await callback.answer("🔒 Цей урок поки що закритий. Спочатку завершіть попередній урок.", show_alert=True)
 
 
 @dp.callback_query(F.data.startswith("complete:"))
 async def complete_lesson(callback: CallbackQuery):
-    user = await check_course_access(callback)
-    if user is None or callback.data is None or callback.message is None:
+    if callback.data is None or callback.message is None:
         return
-    lesson_position = int(callback.data.split(":")[1])
-    lesson = get_lesson_by_position(lesson_position)
+    lesson = get_lesson_by_id(int(callback.data.split(":")[1]))
     if lesson is None:
-        await callback.answer("Урок не найден.", show_alert=True)
+        await callback.answer("Урок не знайдено.", show_alert=True)
         return
-    already_completed = is_lesson_completed(user_id=user.id, lesson_id=lesson.id)
-    if already_completed:
-        await callback.answer("✅ Этот урок уже пройден.", show_alert=True)
+    user = await check_course_access(callback, lesson.course_id)
+    if user is None:
         return
-    available = is_lesson_available(user_id=user.id, lesson_id=lesson.id)
-    if not available:
-        await callback.answer("🔒 Сначала пройдите предыдущий урок.", show_alert=True)
+    if is_lesson_completed(user.id, lesson.id):
+        await callback.answer("✅ Цей урок уже пройдено.", show_alert=True)
         return
-    saved = mark_lesson_completed(user_id=user.id, lesson_id=lesson.id)
-    if not saved:
-        await callback.answer("Не удалось сохранить прогресс.", show_alert=True)
+    if not is_lesson_available(user.id, lesson.id):
+        await callback.answer("🔒 Спочатку пройдіть попередній урок.", show_alert=True)
         return
-    progress = get_course_progress(user_id=user.id, course_id=COURSE_ID)
-    next_lesson = get_next_available_lesson(user_id=user.id, course_id=COURSE_ID)
+    if not mark_lesson_completed(user.id, lesson.id):
+        await callback.answer("Не вдалося зберегти прогрес.", show_alert=True)
+        return
+
+    course = get_course_by_id(lesson.course_id)
+    next_lesson = get_next_available_lesson(user.id, lesson.course_id)
     if next_lesson is None:
         await callback.message.answer(
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🏆 <b>Курс завершено!</b>\n\n"
-            "Вітаємо! Ви успішно завершили курс\n\n"
-            f"<b>{html.escape(COURSE_TITLE)}</b>\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━",
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n🏆 <b>Курс завершено!</b>\n\n"
+            f"Вітаємо! Ви успішно завершили курс\n\n<b>{html.escape(course.title)}</b>\n\n━━━━━━━━━━━━━━━━━━━━━━",
             parse_mode="HTML",
         )
-
-        existing_review = get_user_review(
-            user.id,
-            COURSE_ID,
-        )
-
-        if existing_review is None:
+        if get_user_review(user.id, lesson.course_id) is None:
             await callback.message.answer(
-                "⭐ <b>Будемо вдячні за вашу оцінку</b>\n\n"
-                "Ви можете оцінити курс зараз або повернутися "
-                "до цього пізніше через особистий кабінет.",
+                "⭐ <b>Будемо вдячні за вашу оцінку</b>\n\nВи можете оцінити курс зараз або пізніше.",
                 parse_mode="HTML",
-                reply_markup=review_after_course_keyboard(
-                    COURSE_ID
-                ),
+                reply_markup=review_after_course_keyboard(lesson.course_id),
             )
         else:
-            await callback.message.answer(
-                "❤️ Дякуємо за проходження курсу та ваш відгук!",
-                reply_markup=profile_courses_keyboard(
-                    has_course_access=True,
-                    is_admin=user.is_admin,
-                ),
-            )
-
+            await callback.message.answer("❤️ Дякуємо за проходження курсу!", reply_markup=None)
         return
+
     await callback.message.answer(
-
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-
-        "🎉 <b>Вітаємо!</b>\n\n"
-
-        "Урок успішно завершено.\n\n"
-
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-
-        f"🔓 Відкрито новий урок\n\n"
-
-        f"📖 <b>{next_lesson.title}</b>\n\n"
-
-        "Бажаємо успіхів у навчанні!\n\n"
-
-        "━━━━━━━━━━━━━━━━━━━━━━",
-
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n🎉 <b>Вітаємо!</b>\n\nУрок успішно завершено.\n\n"
+        f"🔓 Відкрито новий урок\n\n📖 <b>{html.escape(next_lesson.title)}</b>\n\n━━━━━━━━━━━━━━━━━━━━━━",
         parse_mode="HTML",
-
-        reply_markup=lesson_keyboard(
-
-            next_lesson.position
-
-        ),
-
+        reply_markup=lesson_keyboard(next_lesson),
     )
+
 
 @dp.callback_query(F.data.startswith("profile_review:"))
 async def profile_review(callback: CallbackQuery):
     if callback.data is None:
         return
 
-    user = await check_course_access(callback)
-
+    course_id = int(callback.data.split(":")[1])
+    user = await check_course_access(callback, course_id)
     if user is None:
         return
-
-    course_id = int(
-        callback.data.split(":")[1]
-    )
+    course = get_course_by_id(course_id)
 
     review = get_user_review(
         user.id,
@@ -1396,7 +1245,7 @@ async def profile_review(callback: CallbackQuery):
                 "━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 "⭐ <b>МІЙ ВІДГУК</b>\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"📦 <b>{html.escape(COURSE_TITLE)}</b>\n\n"
+                f"📦 <b>{html.escape(course.title)}</b>\n\n"
                 "Ви ще не залишили оцінку цьому курсу.\n\n"
                 "Ви можете зробити це зараз або повернутися "
                 "до цього розділу пізніше."
@@ -1420,7 +1269,7 @@ async def profile_review(callback: CallbackQuery):
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "⭐ <b>МІЙ ВІДГУК</b>\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📦 <b>{html.escape(COURSE_TITLE)}</b>\n\n"
+            f"📦 <b>{html.escape(course.title)}</b>\n\n"
             f"Ваша оцінка:\n{'⭐' * review.rating}\n\n"
             f"Ваш відгук:\n{review_text}"
         ),
@@ -1437,20 +1286,17 @@ async def user_review_create(callback: CallbackQuery):
     if callback.data is None:
         return
 
-    user = await check_course_access(callback)
-
+    course_id = int(callback.data.split(":")[1])
+    user = await check_course_access(callback, course_id)
     if user is None:
         return
-
-    course_id = int(
-        callback.data.split(":")[1]
-    )
+    course = get_course_by_id(course_id)
 
     await safe_edit(
         callback,
         (
             "⭐ <b>ОЦІНІТЬ КУРС</b>\n\n"
-            f"📦 {html.escape(COURSE_TITLE)}\n\n"
+            f"📦 {html.escape(course.title)}\n\n"
             "Оберіть оцінку від 1 до 5:"
         ),
         parse_mode="HTML",
@@ -1465,17 +1311,12 @@ async def review_rating(callback: CallbackQuery):
     if callback.data is None or callback.message is None:
         return
 
-    user = await check_course_access(callback)
-
-    if user is None:
-        return
-
-    _, course_id_raw, rating_raw = (
-        callback.data.split(":")
-    )
-
+    _, course_id_raw, rating_raw = callback.data.split(":")
     course_id = int(course_id_raw)
     rating = int(rating_raw)
+    user = await check_course_access(callback, course_id)
+    if user is None:
+        return
 
     if rating < 1 or rating > 5:
         await callback.answer(
@@ -1635,20 +1476,17 @@ async def user_review_change_rating(
     if callback.data is None:
         return
 
-    user = await check_course_access(callback)
-
+    course_id = int(callback.data.split(":")[1])
+    user = await check_course_access(callback, course_id)
     if user is None:
         return
-
-    course_id = int(
-        callback.data.split(":")[1]
-    )
+    course = get_course_by_id(course_id)
 
     await safe_edit(
         callback,
         (
             "⭐ <b>ЗМІНА ОЦІНКИ</b>\n\n"
-            f"📦 {html.escape(COURSE_TITLE)}\n\n"
+            f"📦 {html.escape(course.title)}\n\n"
             "Оберіть нову оцінку:"
         ),
         parse_mode="HTML",
@@ -1667,14 +1505,11 @@ async def user_review_change_text(
     if callback.data is None or callback.message is None:
         return
 
-    user = await check_course_access(callback)
-
+    course_id = int(callback.data.split(":")[1])
+    user = await check_course_access(callback, course_id)
     if user is None:
         return
-
-    course_id = int(
-        callback.data.split(":")[1]
-    )
+    course = get_course_by_id(course_id)
 
     review = get_user_review(
         user.id,
@@ -1703,56 +1538,28 @@ async def user_review_change_text(
 
     await callback.answer()
 
-@dp.callback_query(
-    F.data.startswith("user_review_delete:")
-)
-async def user_review_delete(
-    callback: CallbackQuery,
-):
+@dp.callback_query(F.data.startswith("user_review_delete:"))
+async def user_review_delete(callback: CallbackQuery):
     if callback.data is None:
         return
-
-    user = get_user_from_telegram(
-        callback.from_user
-    )
-
-    review_id = int(
-        callback.data.split(":")[1]
-    )
-
-    review = get_user_review(
-        user.id,
-        COURSE_ID,
-    )
-
+    _, course_id_raw, review_id_raw = callback.data.split(":")
+    course_id = int(course_id_raw)
+    review_id = int(review_id_raw)
+    user = await check_course_access(callback, course_id)
+    if user is None:
+        return
+    review = get_user_review(user.id, course_id)
     if review is None or review.id != review_id:
-        await callback.answer(
-            "Відгук не знайдено.",
-            show_alert=True,
-        )
+        await callback.answer("Відгук не знайдено.", show_alert=True)
         return
-
-    deleted = delete_review(
-        review_id
-    )
-
-    if not deleted:
-        await callback.answer(
-            "Не вдалося видалити відгук.",
-            show_alert=True,
-        )
+    if not delete_review(review_id):
+        await callback.answer("Не вдалося видалити відгук.", show_alert=True)
         return
-
     await safe_edit(
         callback,
-        (
-            "🗑 <b>Відгук видалено</b>\n\n"
-            "Ви зможете залишити нову оцінку в будь-який момент."
-        ),
+        "🗑 <b>Відгук видалено</b>\n\nВи зможете залишити нову оцінку в будь-який момент.",
         parse_mode="HTML",
-        reply_markup=user_review_empty_keyboard(
-            COURSE_ID
-        ),
+        reply_markup=user_review_empty_keyboard(course_id),
     )
 
 
@@ -1801,12 +1608,12 @@ async def review_text_received(
 
     data = await state.get_data()
 
-    course_id = int(
-        data.get(
-            "review_course_id",
-            COURSE_ID,
-        )
-    )
+    course_id_raw = data.get("review_course_id")
+    if course_id_raw is None:
+        await state.clear()
+        await message.answer("Не вдалося визначити курс.")
+        return
+    course_id = int(course_id_raw)
 
     review = save_review_text(
         user.id,
@@ -1839,108 +1646,41 @@ async def review_text_received(
 
 @dp.callback_query(F.data == "review_skip")
 async def review_skip(callback: CallbackQuery):
-    user = get_user_from_telegram(
-        callback.from_user
-    )
-
-    has_course_access = user_has_active_course(
-        user_id=user.id,
-        course_id=COURSE_ID,
-    )
-
+    user = get_user_from_telegram(callback.from_user)
     await safe_edit(
         callback,
-        (
-            "❤️ Дякуємо!\n\n"
-            "Ви можете залишити або змінити відгук "
-            "у будь-який момент через особистий кабінет."
-        ),
+        "❤️ Дякуємо!\n\nВи можете залишити або змінити відгук у будь-який момент через особистий кабінет.",
         reply_markup=profile_courses_keyboard(
-            has_course_access=has_course_access,
-            is_admin=user.is_admin,
+            user.id,
+            [c for c in get_all_courses() if c.is_active and c.is_visible],
+            user.is_admin,
         ),
     )
 
 
 @dp.callback_query(F.data.startswith("buy_course:"))
-
 async def buy_course(callback: CallbackQuery):
-
     if callback.data is None:
-
         return
-
     course_id = int(callback.data.split(":")[1])
-
-    if course_id != COURSE_ID:
-
-        await callback.answer(
-
-            "Курс не знайдено.",
-
-            show_alert=True,
-
-        )
-
+    course = get_course_by_id(course_id)
+    if course is None or not course.is_active or not course.is_visible:
+        await callback.answer("Курс не знайдено.", show_alert=True)
         return
-
-    course_lessons = [
-
-        lesson
-
-        for lesson in lessons
-
-        if lesson.course_id == course_id
-
-        and lesson.is_active
-
-    ]
-
+    course_lessons = [l for l in lessons if l.course_id == course_id and l.is_active]
+    description = html.escape(course.description) if course.description else "Практичний навчальний курс з довічним доступом до матеріалів."
+    price = "Безкоштовно" if course.is_free or course.price == 0 else f"{course.price} грн"
     await safe_edit(
-
         callback,
-
-        (
-
-            "🎓 ПРИДБАННЯ КУРСУ\n\n"
-
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-
-            f"📦 {COURSE_TITLE}\n\n"
-
-            "Практичний навчальний курс для тих, хто хоче "
-
-            "освоїти монтаж гіпсокартону з нуля та уникнути "
-
-            "типових помилок.\n\n"
-
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-
-            "📚 ЩО ВХОДИТЬ У КУРС\n\n"
-
-            f"🎥 {len(course_lessons)} відеоуроків\n"
-
-            "📄 PDF-матеріали до уроків\n"
-
-            "♾ Довічний доступ\n"
-
-            "🔄 Можливість повторного перегляду\n"
-
-            "📢 Оновлення та новини курсу\n\n"
-
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-
-            f"💳 Вартість курсу: {COURSE_PRICE} грн\n\n"
-
-            "Після успішної оплати курс автоматично "
-
-            "з’явиться у вашому особистому кабінеті."
-
-        ),
-
-        reply_markup=buy_course_keyboard(course_id),
-
+        "🎓 <b>ПРИДБАННЯ КУРСУ</b>\n\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📦 <b>{html.escape(course.title)}</b>\n\n{description}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n📚 <b>ЩО ВХОДИТЬ У КУРС</b>\n\n"
+        f"🎥 {len(course_lessons)} відеоуроків\n📄 PDF-матеріали до уроків\n♾ Довічний доступ\n🔄 Повторний перегляд\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n💳 Вартість курсу: <b>{price}</b>",
+        parse_mode="HTML",
+        reply_markup=buy_course_keyboard(course),
     )
+
 
 @dp.callback_query(F.data == "profile")
 async def profile(callback: CallbackQuery):
@@ -1978,7 +1718,7 @@ async def admin_course_create(
         "🎓 <b>СОЗДАНИЕ НОВОГО КУРСА</b>\n\n"
         "Введите название курса одним сообщением.\n\n"
         "Например:\n"
-        "<i>Монтаж гипсокартона с нуля</i>",
+        "<i>Теоретичний курс по Монтажу гіпсокартону з нуля</i>",
         parse_mode="HTML",
         reply_markup=(
             admin_course_create_cancel_keyboard()
@@ -2508,44 +2248,26 @@ async def admin_courses(callback: CallbackQuery):
 async def create_payment(callback: CallbackQuery):
     if callback.data is None or callback.message is None:
         return
-
-    user = get_user_from_telegram(
-        callback.from_user
-    )
-
-    course_id = int(
-        callback.data.split(":")[1]
-    )
-
-    if course_id != COURSE_ID:
-        await callback.answer(
-            "Курс не знайдено.",
-            show_alert=True,
-        )
+    user = get_user_from_telegram(callback.from_user)
+    course_id = int(callback.data.split(":")[1])
+    course = get_course_by_id(course_id)
+    if course is None or not course.is_active or not course.is_visible:
+        await callback.answer("Курс не знайдено.", show_alert=True)
         return
-
-    # Тестовая оплата только для аккаунта Вики
+    if user_has_active_course(user.id, course_id):
+        await callback.answer("У вас уже є доступ до цього курсу.", show_alert=True)
+        return
+    if course.is_free or course.price == 0:
+        grant_course_access(user.id, course_id)
+        await send_purchase_success(user.telegram_id, course.title)
+        return
     if user.telegram_id == 984614878:
-        grant_course_access(
-            user_id=user.id,
-            course_id=course_id,
-        )
-
-        await send_purchase_success(
-            telegram_id=user.telegram_id,
-            course_title=COURSE_TITLE,
-        )
-
-        await callback.answer(
-            "✅ Тестову оплату успішно проведено.",
-            show_alert=True,
-        )
+        grant_course_access(user.id, course_id)
+        await send_purchase_success(user.telegram_id, course.title)
+        await callback.answer("✅ Тестову оплату успішно проведено.", show_alert=True)
         return
-
     await callback.answer(
-        "💳 Платіжна система зараз підключається.\n\n"
-        "Незабаром тут відкриватиметься "
-        "безпечна сторінка оплати LiqPay.",
+        "💳 Платіжна система зараз підключається. Незабаром тут відкриватиметься безпечна сторінка оплати LiqPay.",
         show_alert=True,
     )
 
@@ -3691,13 +3413,20 @@ async def admin_student(
 
     parts = callback.data.split(":")
 
-    student_id = int(parts[1])
+    try:
+        student_id = int(parts[1])
 
-    page = (
-        int(parts[2])
-        if len(parts) > 2
-        else 1
-    )
+        page = (
+            int(parts[2])
+            if len(parts) > 2
+            else 1
+        )
+    except (IndexError, ValueError):
+        await callback.answer(
+            "Не вдалося визначити користувача.",
+            show_alert=True,
+        )
+        return
 
     student = get_user_by_id(
         student_id
@@ -3709,11 +3438,6 @@ async def admin_student(
             show_alert=True,
         )
         return
-
-    has_course_access = user_has_active_course(
-        user_id=student.id,
-        course_id=COURSE_ID,
-    )
 
     full_name = " ".join(
         part
@@ -3728,7 +3452,8 @@ async def admin_student(
         full_name = "Ім’я не вказано"
 
     username_line = (
-        f"🔗 Username: @{html.escape(student.username)}"
+        f"🔗 Username: "
+        f"@{html.escape(student.username)}"
         if student.username
         else "🔗 Username: не вказано"
     )
@@ -3739,51 +3464,113 @@ async def admin_student(
         else "👤 Роль: учень"
     )
 
-    if has_course_access:
-        progress = get_course_progress(
+    courses = [
+        course
+        for course in get_all_courses()
+        if course.is_active
+    ]
+
+    course_blocks: list[str] = []
+
+    for course in courses:
+        has_access = user_has_active_course(
             user_id=student.id,
-            course_id=COURSE_ID,
+            course_id=course.id,
         )
 
-        progress_bar = build_progress_bar(
-            progress["completed"],
-            progress["total"],
+        course_title = html.escape(
+            course.title
         )
 
-        if (
-            progress["total"] > 0
-            and progress["completed"] >= progress["total"]
-        ):
-            course_status = "🏆 Курс завершено"
-        elif progress["completed"] > 0:
-            course_status = "🎓 Навчання розпочато"
+        if has_access:
+            progress = get_course_progress(
+                user_id=student.id,
+                course_id=course.id,
+            )
+
+            progress_bar = build_progress_bar(
+                progress["completed"],
+                progress["total"],
+            )
+
+            if (
+                progress["total"] > 0
+                and progress["completed"]
+                >= progress["total"]
+            ):
+                course_status = (
+                    "🏆 Курс завершено"
+                )
+
+            elif progress["completed"] > 0:
+                course_status = (
+                    "🎓 Навчання розпочато"
+                )
+
+            else:
+                course_status = (
+                    "⏳ Навчання ще не розпочато"
+                )
+
+            review = get_user_review(
+                student.id,
+                course.id,
+            )
+
+            if review is None:
+                review_line = (
+                    "⭐ Оцінка: не залишена"
+                )
+            else:
+                review_line = (
+                    f"⭐ Оцінка: "
+                    f"{'⭐' * review.rating}"
+                )
+
+            course_block = (
+                f"📦 <b>{course_title}</b>\n\n"
+                "✅ Доступ: <b>активний</b>\n\n"
+                f"{progress_bar}\n"
+                f"📈 Прогрес: "
+                f"<b>{progress['percent']}%</b>\n"
+                f"✅ Завершено уроків: "
+                f"<b>{progress['completed']} "
+                f"із {progress['total']}</b>\n"
+                f"{course_status}\n"
+                f"{review_line}"
+            )
+
         else:
-            course_status = "⏳ Навчання ще не розпочато"
+            price_text = (
+                "Безкоштовно"
+                if course.is_free
+                or course.price == 0
+                else f"{course.price} грн"
+            )
 
-        course_block = (
-            "✅ Доступ до курсу: активний\n\n"
-            f"{progress_bar}\n"
-            f"📈 Прогрес: <b>{progress['percent']}%</b>\n"
-            f"✅ Завершено уроків: "
-            f"<b>{progress['completed']} із {progress['total']}</b>\n"
-            f"{course_status}"
+            course_block = (
+                f"📦 <b>{course_title}</b>\n\n"
+                "❌ Доступ: <b>відсутній</b>\n"
+                f"💳 Вартість: "
+                f"<b>{price_text}</b>\n\n"
+                "Користувач ще не придбав "
+                "цей курс."
+            )
+
+        course_blocks.append(
+            course_block
         )
-    else:
-        course_block = (
-            "❌ Доступ до курсу: відсутній\n\n"
-            "Користувач ще не придбав курс."
-        )
 
-    review = get_user_review(
-        student.id,
-        COURSE_ID,
-    )
+    if course_blocks:
+        courses_block = (
+            "\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
+            "\n\n"
+        ).join(course_blocks)
 
-    if review is None:
-        review_block = "⭐ Оцінка курсу: не залишена"
     else:
-        review_block = (
-            f"⭐ Оцінка курсу: {'⭐' * review.rating}"
+        courses_block = (
+            "📚 Активних курсів поки немає."
         )
 
     await safe_edit(
@@ -3792,22 +3579,21 @@ async def admin_student(
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "👤 <b>КАРТКА УЧНЯ</b>\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"Ім’я: <b>{html.escape(full_name)}</b>\n"
+            f"Ім’я: "
+            f"<b>{html.escape(full_name)}</b>\n"
             f"{username_line}\n"
             f"🆔 Telegram ID: "
             f"<code>{student.telegram_id}</code>\n"
-            f"🗄 ID у базі: <code>{student.id}</code>\n"
+            f"🗄 ID у базі: "
+            f"<code>{student.id}</code>\n"
             f"{role_line}\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📦 <b>{html.escape(COURSE_TITLE)}</b>\n\n"
-            f"{course_block}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"{review_block}"
+            f"{courses_block}"
         ),
         parse_mode="HTML",
         reply_markup=admin_student_keyboard(
             student_id=student.id,
-            has_course_access=has_course_access,
+            courses=courses,
             page=page,
         ),
     )
@@ -3825,13 +3611,23 @@ async def admin_grant_course(
 
     parts = callback.data.split(":")
 
-    student_id = int(parts[1])
+    try:
+        student_id = int(parts[1])
+        course_id = int(parts[2])
 
-    page = (
-        int(parts[2])
-        if len(parts) > 2
-        else 1
-    )
+        page = (
+            int(parts[3])
+            if len(parts) > 3
+            else 1
+        )
+
+    except (IndexError, ValueError):
+        await callback.answer(
+            "Не вдалося визначити "
+            "користувача або курс.",
+            show_alert=True,
+        )
+        return
 
     student = get_user_by_id(
         student_id
@@ -3844,19 +3640,38 @@ async def admin_grant_course(
         )
         return
 
+    course = get_course_by_id(
+        course_id
+    )
+
+    if course is None:
+        await callback.answer(
+            "Курс не знайдено.",
+            show_alert=True,
+        )
+        return
+
+    if not course.is_active:
+        await callback.answer(
+            "Цей курс зараз неактивний.",
+            show_alert=True,
+        )
+        return
+
     if user_has_active_course(
         user_id=student.id,
-        course_id=COURSE_ID,
+        course_id=course.id,
     ):
         await callback.answer(
-            "У користувача вже є доступ до курсу.",
+            "У користувача вже є доступ "
+            "до цього курсу.",
             show_alert=True,
         )
         return
 
     purchase = grant_course_access(
         user_id=student.id,
-        course_id=COURSE_ID,
+        course_id=course.id,
     )
 
     if purchase is None:
@@ -3869,16 +3684,18 @@ async def admin_grant_course(
     try:
         await send_purchase_success(
             telegram_id=student.telegram_id,
-            course_title=COURSE_TITLE,
+            course_title=course.title,
         )
 
         notification_text = (
-            "Доступ видано. Користувачу надіслано повідомлення."
+            "Доступ видано. Користувачу "
+            "надіслано повідомлення."
         )
+
     except Exception:
         notification_text = (
-            "Доступ видано, але повідомлення користувачу "
-            "не вдалося доставити."
+            "Доступ видано, але повідомлення "
+            "користувачу не вдалося доставити."
         )
 
     await callback.answer(
@@ -3887,7 +3704,9 @@ async def admin_grant_course(
     )
 
     callback.data = (
-        f"admin_student:{student.id}:{page}"
+        f"admin_student:"
+        f"{student.id}:"
+        f"{page}"
     )
 
     await admin_student(
@@ -3901,6 +3720,8 @@ async def admin_reviews(callback: CallbackQuery):
     if user is None:
         return
     summary = get_review_summary()
+
+
     await safe_edit(
         callback,
         f"⭐ <b>ВІДГУКИ</b>\n\n🆕 Нових: {summary['unread']}\n📝 Усього: {summary['total']}\n⭐ Середня оцінка: {summary['average']}",

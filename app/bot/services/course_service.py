@@ -63,7 +63,7 @@ def create_course_with_lessons(
             title=title,
             price=price,
             is_active=True,
-            is_visible=False,
+            is_visible=True,
             is_free=False,
             position=next_course_position,
         )
