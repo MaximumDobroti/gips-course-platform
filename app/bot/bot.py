@@ -83,6 +83,15 @@ from app.bot.services.review_service import (
     save_rating,
     save_review_text,
 )
+from app.bot.services.payment_request_service import (
+    confirm_payment_request,
+    count_submitted_payment_requests,
+    create_payment_request,
+    get_payment_request,
+    get_payment_requests,
+    reject_payment_request,
+    submit_receipt,
+)
 from app.bot.services.statistics_service import get_platform_statistics
 from app.database.database import Base, engine
 
@@ -92,6 +101,13 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if BOT_TOKEN is None:
     raise RuntimeError("BOT_TOKEN is not set in .env")
+
+PAYMENT_CARD_NUMBER = os.getenv("PAYMENT_CARD_NUMBER", "").strip()
+PAYMENT_CARD_HOLDER = os.getenv("PAYMENT_CARD_HOLDER", "").strip()
+PAYMENT_IBAN = os.getenv("PAYMENT_IBAN", "").strip()
+PAYMENT_RECIPIENT = os.getenv("PAYMENT_RECIPIENT", "").strip()
+PAYMENT_EDRPOU = os.getenv("PAYMENT_EDRPOU", "").strip()
+
 COURSE_ID = 1
 
 COURSE_TITLE = "Теоретичний курс по Монтажу гіпсокартону з нуля"
@@ -135,6 +151,10 @@ class AdminAnnouncementCreate(StatesGroup):
 
 class CourseReviewCreate(StatesGroup):
     waiting_for_text = State()
+
+
+class ManualPaymentReceipt(StatesGroup):
+    waiting_for_receipt = State()
 
 
 def refresh_lessons() -> None:
@@ -589,30 +609,44 @@ def navigation_keyboard(course_id: int):
 
 
 def lesson_keyboard(lesson):
+
     keyboard = InlineKeyboardBuilder()
-    course_lessons = [l for l in lessons if l.course_id == lesson.course_id and l.is_active]
+
     keyboard.button(
-        text="🏁 Завершити курс" if lesson.position >= len(course_lessons) else "▶️ Відкрити наступний урок",
-        callback_data=f"complete:{lesson.id}",
+
+        text="▶️ Відкрити наступний урок",
+
+        callback_data=f"open_lesson:{lesson.id}",
+
     )
-    keyboard.button(text="📚 Всі уроки", callback_data=f"lessons:{lesson.course_id}")
+
+    keyboard.button(
+
+        text="📚 Всі уроки",
+
+        callback_data=f"lessons:{lesson.course_id}",
+
+    )
+
     keyboard.adjust(1)
+
     return keyboard.as_markup()
 
 
-def lessons_list_keyboard(course_lessons, completed_lesson_ids: set[int], available_lesson_id: int | None):
-    keyboard = InlineKeyboardBuilder()
-    for lesson in course_lessons:
-        if lesson.id in completed_lesson_ids:
-            text, data = f"✅ {lesson.position}. {lesson.title}", f"open_lesson:{lesson.id}"
-        elif lesson.id == available_lesson_id:
-            text, data = f"▶️ {lesson.position}. {lesson.title}", f"open_lesson:{lesson.id}"
-        else:
-            text, data = f"🔒 {lesson.position}. {lesson.title}", f"locked_lesson:{lesson.id}"
-        keyboard.button(text=text, callback_data=data)
-    keyboard.button(text="⬅️ До особистого кабінету", callback_data="profile")
-    keyboard.adjust(1)
-    return keyboard.as_markup()
+
+# def lessons_list_keyboard(course_lessons, completed_lesson_ids: set[int], available_lesson_id: int | None):
+#     keyboard = InlineKeyboardBuilder()
+#     for lesson in course_lessons:
+#         if lesson.id in completed_lesson_ids:
+#             text, data = f"✅ {lesson.position}. {lesson.title}", f"open_lesson:{lesson.id}"
+#         elif lesson.id == available_lesson_id:
+#             text, data = f"▶️ {lesson.position}. {lesson.title}", f"open_lesson:{lesson.id}"
+#         else:
+#             text, data = f"🔒 {lesson.position}. {lesson.title}", f"locked_lesson:{lesson.id}"
+#         keyboard.button(text=text, callback_data=data)
+#     keyboard.button(text="⬅️ До особистого кабінету", callback_data="profile")
+#     keyboard.adjust(1)
+#     return keyboard.as_markup()
 
 
 def lessons_list_keyboard(
@@ -690,6 +724,9 @@ def admin_menu():
     keyboard.button(text="📚 Курсы", callback_data="admin_courses")
     keyboard.button(text="📢 Новости", callback_data="admin_news")
     keyboard.button(text="👥 Ученики", callback_data="admin_students")
+    pending_payments = count_submitted_payment_requests()
+    payments_label = f"💳 Оплати ({pending_payments})" if pending_payments else "💳 Оплати"
+    keyboard.button(text=payments_label, callback_data="admin_payments")
     keyboard.button(text="⭐ Отзывы", callback_data="admin_reviews")
     keyboard.button(text="📊 Статистика", callback_data="admin_statistics")
     keyboard.button(text="⬅️ Личный кабинет", callback_data="profile")
@@ -888,6 +925,89 @@ def admin_course_keyboard(course_id: int):
 
 
 
+def payment_method_keyboard(course_id: int):
+    keyboard = InlineKeyboardBuilder()
+    keyboard.button(text="💳 Оплатити на картку", callback_data=f"payment_method:{course_id}:card")
+    keyboard.button(text="🏦 Оплатити за IBAN", callback_data=f"payment_method:{course_id}:iban")
+    keyboard.button(text="⬅️ Назад", callback_data=f"buy_course:{course_id}")
+    keyboard.adjust(1)
+    return keyboard.as_markup()
+
+
+def payment_details_keyboard(request_id: int):
+    keyboard = InlineKeyboardBuilder()
+    keyboard.button(text="✅ Я оплатив", callback_data=f"payment_paid:{request_id}")
+    keyboard.button(text="⬅️ До особистого кабінету", callback_data="profile")
+    keyboard.adjust(1)
+    return keyboard.as_markup()
+
+
+# def admin_payments_keyboard(requests):
+#     keyboard = InlineKeyboardBuilder()
+#     for payment in requests:
+#         keyboard.button(
+#             text=f"🟠 Заявка #{payment.id} — {payment.amount} грн",
+#             callback_data=f"admin_payment:{payment.id}",
+#         )
+#     keyboard.button(text="🔄 Оновити", callback_data="admin_payments")
+#     keyboard.button(text="⬅️ Назад", callback_data="admin_panel")
+#     keyboard.adjust(1)
+#     return keyboard.as_markup()
+
+def admin_payments_keyboard(requests):
+
+    keyboard = InlineKeyboardBuilder()
+
+    for payment in requests:
+
+        payment_code = f"PAY-{payment.id:06d}"
+
+        keyboard.button(
+
+            text=(
+
+                f"🟠 #{payment.id} · "
+
+                f"{payment_code} · "
+
+                f"{payment.amount} грн"
+
+            ),
+
+            callback_data=f"admin_payment:{payment.id}",
+
+        )
+
+    keyboard.button(
+
+        text="🔄 Оновити",
+
+        callback_data="admin_payments",
+
+    )
+
+    keyboard.button(
+
+        text="⬅️ Назад",
+
+        callback_data="admin_panel",
+
+    )
+
+    keyboard.adjust(1)
+
+    return keyboard.as_markup()
+
+
+def admin_payment_actions_keyboard(request_id: int):
+    keyboard = InlineKeyboardBuilder()
+    keyboard.button(text="✅ Підтвердити оплату", callback_data=f"admin_payment_confirm:{request_id}")
+    keyboard.button(text="❌ Відхилити", callback_data=f"admin_payment_reject:{request_id}")
+    keyboard.button(text="⬅️ До оплат", callback_data="admin_payments")
+    keyboard.adjust(1)
+    return keyboard.as_markup()
+
+
 def buy_course_keyboard(course):
     keyboard = InlineKeyboardBuilder()
     price = "безкоштовно" if course.is_free or course.price == 0 else f"{course.price} грн"
@@ -952,48 +1072,130 @@ def admin_lesson_keyboard(lesson_id: int, course_id: int):
     keyboard.adjust(1)
     return keyboard.as_markup()
 
-async def send_lesson(callback: CallbackQuery, lesson):
+# async def send_lesson(callback: CallbackQuery, lesson):
+#
+#     if callback.message is None:
+#         return
+#
+#     caption = (
+#         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+#         f"🎥 УРОК {lesson.position}\n\n"
+#         f"📖 <b>{lesson.title}</b>\n\n"
+#         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+#         f"{lesson.description or 'Опис уроку ще не додано.'}\n\n"
+#         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+#         "✅ Після перегляду уроку натисніть кнопку\n"
+#         "<b>«Завершити урок»</b>, щоб відкрити наступний."
+#     )
+#
+#     if lesson.video_file_id:
+#
+#         await callback.message.answer_video(
+#             video=lesson.video_file_id,
+#             caption=caption,
+#             parse_mode="HTML",
+#             protect_content=True,
+#             reply_markup=lesson_only_keyboard(lesson),
+#         )
+#
+#     else:
+#
+#         await callback.message.answer(
+#             caption
+#             + "\n\n⚠️ Відео ще не завантажено.",
+#             parse_mode="HTML",
+#             protect_content=True,
+#             reply_markup=lesson_only_keyboard(lesson),
+#         )
+#
+#     await callback.message.answer(
+#         "📚 <b>Навігація</b>",
+#         parse_mode="HTML",
+#         reply_markup=navigation_keyboard(lesson.course_id),
+#     )
+#
 
+async def send_lesson(
+    callback: CallbackQuery,
+    lesson,
+):
     if callback.message is None:
         return
+
+    description = (
+        lesson.description.strip()
+        if lesson.description
+        else ""
+    )
+
+    if description:
+        topics = [
+            line.strip().rstrip(".")
+            for line in description.splitlines()
+            if line.strip()
+        ]
+
+        topics_text = "\n".join(
+            f"• {html.escape(topic)}"
+            for topic in topics
+        )
+    else:
+        topics_text = (
+            "• Опис уроку ще не додано"
+        )
 
     caption = (
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🎥 УРОК {lesson.position}\n\n"
-        f"📖 <b>{lesson.title}</b>\n\n"
+        f"📖 <b>{html.escape(lesson.title)}</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{lesson.description or 'Опис уроку ще не додано.'}\n\n"
+        "📌 <b>У цьому уроці ви дізнаєтесь:</b>\n\n"
+        f"{topics_text}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "✅ Після перегляду уроку натисніть кнопку\n"
         "<b>«Завершити урок»</b>, щоб відкрити наступний."
     )
 
     if lesson.video_file_id:
-
         await callback.message.answer_video(
             video=lesson.video_file_id,
             caption=caption,
             parse_mode="HTML",
             protect_content=True,
-            reply_markup=lesson_only_keyboard(lesson),
+            reply_markup=lesson_only_keyboard(
+                lesson
+            ),
         )
-
     else:
-
         await callback.message.answer(
             caption
             + "\n\n⚠️ Відео ще не завантажено.",
             parse_mode="HTML",
             protect_content=True,
-            reply_markup=lesson_only_keyboard(lesson),
+            reply_markup=lesson_only_keyboard(
+                lesson
+            ),
+        )
+
+    if lesson.pdf_file_id:
+        await callback.message.answer_document(
+            document=lesson.pdf_file_id,
+            caption=(
+                "📄 <b>PDF-МАТЕРІАЛИ ДО УРОКУ</b>\n\n"
+                f"Урок {lesson.position}. "
+                f"{html.escape(lesson.title)}"
+            ),
+            parse_mode="HTML",
+            protect_content=True,
         )
 
     await callback.message.answer(
         "📚 <b>Навігація</b>",
         parse_mode="HTML",
-        reply_markup=navigation_keyboard(lesson.course_id),
+        reply_markup=navigation_keyboard(
+            lesson.course_id
+        ),
     )
-
 
 
 @dp.message(CommandStart())
@@ -2248,29 +2450,410 @@ async def admin_courses(callback: CallbackQuery):
 async def create_payment(callback: CallbackQuery):
     if callback.data is None or callback.message is None:
         return
+
     user = get_user_from_telegram(callback.from_user)
     course_id = int(callback.data.split(":")[1])
     course = get_course_by_id(course_id)
+
     if course is None or not course.is_active or not course.is_visible:
         await callback.answer("Курс не знайдено.", show_alert=True)
         return
+
     if user_has_active_course(user.id, course_id):
         await callback.answer("У вас уже є доступ до цього курсу.", show_alert=True)
         return
+
     if course.is_free or course.price == 0:
         grant_course_access(user.id, course_id)
         await send_purchase_success(user.telegram_id, course.title)
+        await callback.answer("Доступ відкрито.")
         return
-    if user.telegram_id == 984614878:
-        grant_course_access(user.id, course_id)
-        await send_purchase_success(user.telegram_id, course.title)
-        await callback.answer("✅ Тестову оплату успішно проведено.", show_alert=True)
-        return
-    await callback.answer(
-        "💳 Платіжна система зараз підключається. Незабаром тут відкриватиметься безпечна сторінка оплати LiqPay.",
-        show_alert=True,
+
+    await safe_edit(
+        callback,
+        (
+            "💳 <b>ОПЛАТА КУРСУ</b>\n\n"
+            f"📚 <b>{html.escape(course.title)}</b>\n\n"
+            f"Сума до оплати: <b>{course.price} грн</b>\n\n"
+            "Оберіть зручний спосіб оплати:"
+        ),
+        parse_mode="HTML",
+        reply_markup=payment_method_keyboard(course.id),
     )
 
+@dp.callback_query(F.data.startswith("payment_method:"))
+async def payment_method(callback: CallbackQuery):
+    if callback.data is None:
+        return
+
+    try:
+        _, course_id_raw, method = callback.data.split(":")
+        course_id = int(course_id_raw)
+    except (ValueError, IndexError):
+        await callback.answer(
+            "Некоректні дані оплати.",
+            show_alert=True,
+        )
+        return
+
+    user = get_user_from_telegram(callback.from_user)
+    course = get_course_by_id(course_id)
+
+    if (
+        course is None
+        or not course.is_active
+        or not course.is_visible
+    ):
+        await callback.answer(
+            "Курс не знайдено.",
+            show_alert=True,
+        )
+        return
+
+    if user_has_active_course(user.id, course.id):
+        await callback.answer(
+            "У вас уже є доступ до цього курсу.",
+            show_alert=True,
+        )
+        return
+
+    if method not in {"card", "iban"}:
+        await callback.answer(
+            "Некоректний спосіб оплати.",
+            show_alert=True,
+        )
+        return
+
+    # Сначала создаём заявку, чтобы получить её уникальный ID
+    request = create_payment_request(
+        user_id=user.id,
+        course_id=course.id,
+        amount=int(course.price),
+        payment_method=method,
+    )
+
+    if request is None:
+        await callback.answer(
+            "Не вдалося створити заявку на оплату.",
+            show_alert=True,
+        )
+        return
+
+    # Уникальный код конкретной заявки
+    payment_code = f"PAY-{request.id:06d}"
+
+    # Назначение платежа
+    payment_purpose = (
+
+        f"Переказ власних коштів. Код платежу {payment_code}"
+
+    )
+
+    if method == "card":
+        if (
+            not PAYMENT_CARD_NUMBER
+            or not PAYMENT_CARD_HOLDER
+        ):
+            await callback.answer(
+                "Реквізити картки ще не налаштовані.",
+                show_alert=True,
+            )
+            return
+
+        details = (
+            "💳 <b>ОПЛАТА НА КАРТКУ</b>\n\n"
+            f"Сума: <b>{course.price} грн</b>\n\n"
+            "Номер картки:\n"
+            f"<code>{html.escape(PAYMENT_CARD_NUMBER)}</code>\n\n"
+            "Отримувач:\n"
+            f"<b>{html.escape(PAYMENT_CARD_HOLDER)}</b>\n\n"
+            "Код платежу:\n"
+            f"<code>{payment_code}</code>\n\n"
+            "Призначення платежу:\n"
+            f"<code>{html.escape(payment_purpose)}</code>"
+        )
+
+    else:
+        if (
+            not PAYMENT_IBAN
+            or not PAYMENT_RECIPIENT
+            or not PAYMENT_EDRPOU
+        ):
+            await callback.answer(
+                "Реквізити IBAN ще не налаштовані.",
+                show_alert=True,
+            )
+            return
+
+        details = (
+            "🏦 <b>ОПЛАТА ЗА РЕКВІЗИТАМИ IBAN</b>\n\n"
+            f"Сума: <b>{course.price} грн</b>\n\n"
+            "Отримувач:\n"
+            f"<b>{html.escape(PAYMENT_RECIPIENT)}</b>\n\n"
+            "Код отримувача (ЄДРПОУ):\n"
+            f"<code>{html.escape(PAYMENT_EDRPOU)}</code>\n\n"
+            "IBAN:\n"
+            f"<code>{html.escape(PAYMENT_IBAN)}</code>\n\n"
+            "Код платежу:\n"
+            f"<code>{payment_code}</code>\n\n"
+            "Призначення платежу:\n"
+            f"<code>{html.escape(payment_purpose)}</code>"
+        )
+
+    await safe_edit(
+        callback,
+        (
+            f"{details}\n\n"
+            "⚠️ <b>Важливо:</b> скопіюйте призначення платежу "
+            "без змін і вкажіть його під час оплати.\n\n"
+            "Після переказу натисніть кнопку "
+            "<b>«Я оплатив»</b> та надішліть квитанцію "
+            "у вигляді фото або PDF.\n\n"
+            "ℹ️ Заявка вже прив’язана до вашого "
+            "Telegram-профілю та обраного курсу."
+        ),
+        parse_mode="HTML",
+        reply_markup=payment_details_keyboard(request.id),
+    )
+
+
+# @dp.callback_query(F.data.startswith("payment_method:"))
+# async def payment_method(callback: CallbackQuery):
+#     if callback.data is None:
+#         return
+#
+#     _, course_id_raw, method = callback.data.split(":")
+#     course_id = int(course_id_raw)
+#     user = get_user_from_telegram(callback.from_user)
+#     course = get_course_by_id(course_id)
+#
+#     if course is None or not course.is_active or not course.is_visible:
+#         await callback.answer("Курс не знайдено.", show_alert=True)
+#         return
+#
+#     if method == "card":
+#         if not PAYMENT_CARD_NUMBER or not PAYMENT_CARD_HOLDER:
+#             await callback.answer("Реквізити картки ще не налаштовані.", show_alert=True)
+#             return
+#         details = (
+#             "💳 <b>ОПЛАТА НА КАРТКУ</b>\n\n"
+#             f"Сума: <b>{course.price} грн</b>\n\n"
+#             f"Номер картки:\n<code>{html.escape(PAYMENT_CARD_NUMBER)}</code>\n\n"
+#             f"Отримувач:\n<b>{html.escape(PAYMENT_CARD_HOLDER)}</b>"
+#         )
+#     elif method == "iban":
+#
+#         if (
+#
+#                 not PAYMENT_IBAN
+#
+#                 or not PAYMENT_RECIPIENT
+#
+#                 or not PAYMENT_EDRPOU
+#
+#         ):
+#             await callback.answer(
+#
+#                 "Реквізити IBAN ще не налаштовані.",
+#
+#                 show_alert=True,
+#
+#             )
+#
+#             return
+#
+#         details = (
+#
+#             "🏦 <b>ОПЛАТА ЗА РЕКВІЗИТАМИ</b>\n\n"
+#
+#             f"Сума: <b>{course.price} грн</b>\n\n"
+#
+#             f"Отримувач:\n"
+#
+#             f"<b>{html.escape(PAYMENT_RECIPIENT)}</b>\n\n"
+#
+#             f"Код отримувача (ЄДРПОУ):\n"
+#
+#             f"<code>{html.escape(PAYMENT_EDRPOU)}</code>\n\n"
+#
+#             f"IBAN:\n"
+#
+#             f"<code>{html.escape(PAYMENT_IBAN)}</code>"
+#
+#         )
+#
+#
+#     else:
+#         await callback.answer("Некоректний спосіб оплати.", show_alert=True)
+#         return
+#
+#     request = create_payment_request(user.id, course.id, int(course.price), method)
+#     if request is None:
+#         await callback.answer("Не вдалося створити заявку на оплату.", show_alert=True)
+#         return
+#
+#     await safe_edit(
+#         callback,
+#         (
+#             f"{details}\n\n"
+#             "Після переказу натисніть кнопку <b>«Я оплатив»</b> та надішліть квитанцію "
+#             "у вигляді фото або PDF.\n\n"
+#             "ℹ️ Заявка вже прив’язана до вашого Telegram-профілю та обраного курсу."
+#         ),
+#         parse_mode="HTML",
+#         reply_markup=payment_details_keyboard(request.id),
+#     )
+
+
+@dp.callback_query(F.data.startswith("payment_paid:"))
+async def payment_paid(callback: CallbackQuery, state: FSMContext):
+    if callback.data is None or callback.message is None:
+        return
+
+    request_id = int(callback.data.split(":")[1])
+    request = get_payment_request(request_id)
+    user = get_user_from_telegram(callback.from_user)
+
+    if request is None or request.user_id != user.id:
+        await callback.answer("Заявку не знайдено.", show_alert=True)
+        return
+
+    await state.update_data(payment_request_id=request.id)
+    await state.set_state(ManualPaymentReceipt.waiting_for_receipt)
+    await callback.message.answer(
+        "📎 <b>НАДІШЛІТЬ КВИТАНЦІЮ</b>\n\n"
+        "Надішліть одним повідомленням фотографію, скриншот або PDF-файл квитанції.\n\n"
+        "Після надсилання заявка потрапить адміністратору на перевірку.",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@dp.message(ManualPaymentReceipt.waiting_for_receipt)
+async def payment_receipt_received(message: Message, state: FSMContext):
+    if message.from_user is None:
+        return
+
+    file_id = None
+    file_type = None
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        file_type = "photo"
+    elif message.document:
+        file_name = (message.document.file_name or "").lower()
+        if message.document.mime_type != "application/pdf" and not file_name.endswith(".pdf"):
+            await message.answer("Надішліть квитанцію як фотографію або PDF-файл.")
+            return
+        file_id = message.document.file_id
+        file_type = "document"
+    else:
+        await message.answer("Надішліть квитанцію як фотографію або PDF-файл.")
+        return
+
+    data = await state.get_data()
+    request_id = data.get("payment_request_id")
+    if request_id is None:
+        await state.clear()
+        await message.answer("Не вдалося визначити заявку. Розпочніть оплату ще раз.")
+        return
+
+    request = get_payment_request(int(request_id))
+    user = get_user_from_telegram(message.from_user)
+    if request is None or request.user_id != user.id:
+        await state.clear()
+        await message.answer("Заявку не знайдено.")
+        return
+
+    submitted = submit_receipt(int(request_id), file_id, file_type)
+    await state.clear()
+    if submitted is None:
+        await message.answer("Не вдалося зберегти квитанцію. Спробуйте ще раз.")
+        return
+
+    course = get_course_by_id(submitted.course_id)
+    await message.answer(
+        "✅ <b>КВИТАНЦІЮ ОТРИМАНО</b>\n\n"
+        f"Курс: <b>{html.escape(course.title if course else 'Курс')}</b>\n"
+        f"Сума: <b>{submitted.amount} грн</b>\n\n"
+        "Оплата передана адміністратору на перевірку. Після підтвердження доступ відкриється автоматично.",
+        parse_mode="HTML",
+        reply_markup=main_menu(user.is_admin),
+    )
+
+    # for admin_user in [item for item in get_all_users(limit=1000, offset=0) if item.is_admin]:
+    #     try:
+    #         await bot.send_message(
+    #             admin_user.telegram_id,
+    #             f"💳 Нова квитанція на перевірку\n\nЗаявка #{submitted.id}\nСума: {submitted.amount} грн",
+    #             reply_markup=admin_payment_actions_keyboard(submitted.id),
+    #         )
+    #     except Exception:
+    #         pass
+    #
+    #
+
+    for admin_user in [
+        item
+        for item in get_all_users(limit=1000, offset=0)
+        if item.is_admin
+    ]:
+        try:
+            payment_code = f"PAY-{submitted.id:06d}"
+
+            admin_caption = (
+
+                "💳 <b>НОВА КВИТАНЦІЯ НА ПЕРЕВІРКУ</b>\n\n"
+
+                f"Заявка: <b>#{submitted.id}</b>\n"
+
+                f"Код платежу: <code>{payment_code}</code>\n"
+
+                f"Сума: <b>{submitted.amount} грн</b>\n\n"
+
+                "🔍 Перевірте, щоб код у квитанції збігався "
+
+                "з кодом заявки.\n\n"
+
+                "Натисніть кнопку нижче, щоб підтвердити "
+
+                "або відхилити оплату."
+
+            )
+
+            if submitted.receipt_file_type == "photo":
+                await bot.send_photo(
+                    chat_id=admin_user.telegram_id,
+                    photo=submitted.receipt_file_id,
+                    caption=admin_caption,
+                    parse_mode="HTML",
+                    reply_markup=admin_payment_actions_keyboard(
+                        submitted.id
+                    ),
+                )
+
+            elif submitted.receipt_file_type == "document":
+                await bot.send_document(
+                    chat_id=admin_user.telegram_id,
+                    document=submitted.receipt_file_id,
+                    caption=admin_caption,
+                    parse_mode="HTML",
+                    reply_markup=admin_payment_actions_keyboard(
+                        submitted.id
+                    ),
+                )
+
+            else:
+                await bot.send_message(
+                    chat_id=admin_user.telegram_id,
+                    text=admin_caption,
+                    parse_mode="HTML",
+                    reply_markup=admin_payment_actions_keyboard(
+                        submitted.id
+                    ),
+                )
+
+        except Exception:
+            pass
 
 
 
@@ -3714,6 +4297,184 @@ async def admin_grant_course(
     )
 
 
+# @dp.callback_query(F.data == "admin_payments")
+# async def admin_payments(callback: CallbackQuery):
+#     user = await check_admin(callback)
+#     if user is None:
+#         return
+#     requests = get_payment_requests(status="submitted", limit=50)
+#     text = (
+#         "💳 <b>ОПЛАТИ</b>\n\n"
+#         f"Очікують перевірки: <b>{len(requests)}</b>\n\nОберіть заявку:"
+#         if requests
+#         else "💳 <b>ОПЛАТИ</b>\n\nНових квитанцій для перевірки немає."
+#     )
+#     await safe_edit(callback, text, parse_mode="HTML", reply_markup=admin_payments_keyboard(requests))
+@dp.callback_query(F.data == "admin_payments")
+async def admin_payments(callback: CallbackQuery):
+    user = await check_admin(callback)
+
+    if user is None or callback.message is None:
+        return
+
+    requests = get_payment_requests(
+        status="submitted",
+        limit=50,
+    )
+
+    if requests:
+        text = (
+            "💳 <b>ОПЛАТИ</b>\n\n"
+            f"Очікують перевірки: "
+            f"<b>{len(requests)}</b>\n\n"
+            "Оберіть заявку:"
+        )
+    else:
+        text = (
+            "💳 <b>ОПЛАТИ</b>\n\n"
+            "Нових квитанцій для перевірки немає."
+        )
+
+    keyboard = admin_payments_keyboard(requests)
+
+    # Если кнопка нажата под обычным текстовым сообщением
+    if callback.message.text is not None:
+        await safe_edit(
+            callback,
+            text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+
+    # Если кнопка нажата под фото, PDF или другим медиасообщением
+    else:
+        try:
+            # Убираем старые кнопки под квитанцией
+            await callback.message.edit_reply_markup(
+                reply_markup=None
+            )
+        except TelegramBadRequest:
+            pass
+
+        # Отправляем список оплат отдельным текстовым сообщением
+        await callback.message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+
+        await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("admin_payment:"))
+async def admin_payment(callback: CallbackQuery):
+    user = await check_admin(callback)
+    if user is None or callback.data is None or callback.message is None:
+        return
+    request_id = int(callback.data.split(":")[1])
+    request = get_payment_request(request_id)
+    if request is None:
+        await callback.answer("Заявку не знайдено.", show_alert=True)
+        return
+    student = get_user_by_id(request.user_id)
+    course = get_course_by_id(request.course_id)
+    if student is None or course is None:
+        await callback.answer("Дані заявки пошкоджено.", show_alert=True)
+        return
+    full_name = " ".join(part for part in [student.first_name, student.last_name] if part) or "Користувач"
+    username = f"@{student.username}" if student.username else "не вказано"
+    method = "Картка" if request.payment_method == "card" else "IBAN"
+    payment_code = f"PAY-{request.id:06d}"
+
+    payment_purpose = (
+
+        f"Переказ власних коштів. Код платежу {payment_code}"
+
+    )
+    caption = (
+
+        "💳 <b>ЗАЯВКА НА ОПЛАТУ</b>\n\n"
+
+        f"Заявка: <b>#{request.id}</b>\n"
+
+        f"Код платежу: <code>{payment_code}</code>\n\n"
+
+        f"👤 Учень: <b>{html.escape(full_name)}</b>\n"
+
+        f"Username: {html.escape(username)}\n"
+
+        f"Telegram ID: <code>{student.telegram_id}</code>\n\n"
+
+        f"📚 Курс: <b>{html.escape(course.title)}</b>\n"
+
+        f"💰 Сума: <b>{request.amount} грн</b>\n"
+
+        f"💳 Спосіб: <b>{method}</b>\n\n"
+
+        "📝 <b>Очікуване призначення платежу:</b>\n"
+
+        f"<code>{html.escape(payment_purpose)}</code>\n\n"
+
+        "🔍 Звірте код із кодом, зазначеним у квитанції."
+
+    )
+    if request.receipt_file_type == "photo":
+        await callback.message.answer_photo(request.receipt_file_id, caption=caption, parse_mode="HTML", reply_markup=admin_payment_actions_keyboard(request.id))
+    else:
+        await callback.message.answer_document(request.receipt_file_id, caption=caption, parse_mode="HTML", reply_markup=admin_payment_actions_keyboard(request.id))
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("admin_payment_confirm:"))
+async def admin_payment_confirm(callback: CallbackQuery):
+    admin = await check_admin(callback)
+    if admin is None or callback.data is None:
+        return
+    request_id = int(callback.data.split(":")[1])
+    confirmed = confirm_payment_request(request_id, admin.id)
+    if confirmed is None:
+        await callback.answer("Заявка вже оброблена або не знайдена.", show_alert=True)
+        return
+    grant_course_access(confirmed.user_id, confirmed.course_id)
+    student = get_user_by_id(confirmed.user_id)
+    course = get_course_by_id(confirmed.course_id)
+    if student is not None and course is not None:
+        try:
+            await send_purchase_success(student.telegram_id, course.title)
+        except Exception:
+            pass
+    await callback.answer("Оплату підтверджено. Доступ відкрито.", show_alert=True)
+    await admin_payments(callback)
+
+
+@dp.callback_query(F.data.startswith("admin_payment_reject:"))
+async def admin_payment_reject(callback: CallbackQuery):
+    admin = await check_admin(callback)
+    if admin is None or callback.data is None:
+        return
+    request_id = int(callback.data.split(":")[1])
+    rejected = reject_payment_request(request_id, admin.id)
+    if rejected is None:
+        await callback.answer("Заявка вже оброблена або не знайдена.", show_alert=True)
+        return
+    student = get_user_by_id(rejected.user_id)
+    course = get_course_by_id(rejected.course_id)
+    if student is not None:
+        try:
+            await bot.send_message(
+                student.telegram_id,
+                "❌ <b>ОПЛАТУ НЕ ПІДТВЕРДЖЕНО</b>\n\n"
+                f"Курс: <b>{html.escape(course.title if course else 'Курс')}</b>\n\n"
+                "Перевірте переказ і надішліть нову квитанцію або зверніться до адміністратора.",
+                parse_mode="HTML",
+                reply_markup=main_menu(student.is_admin),
+            )
+        except Exception:
+            pass
+    await callback.answer("Заявку відхилено.", show_alert=True)
+    await admin_payments(callback)
+
+
 @dp.callback_query(F.data == "admin_reviews")
 async def admin_reviews(callback: CallbackQuery):
     user = await check_admin(callback)
@@ -3792,15 +4553,17 @@ async def admin_statistics(callback: CallbackQuery):
         callback,
         "📊 <b>СТАТИСТИКА ПЛАТФОРМИ</b>\n\n"
         f"👥 Користувачів: <b>{stats['users_total']}</b>\n"
-        f"💳 Активних покупок: <b>{stats['active_purchases']}</b>\n"
-        f"💰 Розрахунковий дохід: <b>{stats['income']} грн</b>\n\n"
+        f"🔓 Відкрито доступів: <b>{stats['active_purchases']}</b>\n"
+        f"💳 Підтверджених продажів: <b>{stats['paid_sales']}</b>\n"
+        f"🟠 Оплат на перевірці: <b>{stats['payments_to_review']}</b>\n"
+        f"💰 Підтверджений дохід: <b>{stats['income']} грн</b>\n\n"
         f"🎓 Розпочали курс: <b>{stats['started']}</b>\n"
         f"🏆 Завершили курс: <b>{stats['completed']}</b>\n"
         f"📈 Середній прогрес: <b>{stats['average_progress']}%</b>\n\n"
         f"⭐ Середня оцінка: <b>{stats['average_rating']}</b>\n"
         f"📝 Відгуків: <b>{stats['review_total']}</b>\n"
         f"🔔 Нових відгуків: <b>{stats['unread_reviews']}</b>\n\n"
-        "ℹ️ До підключення LiqPay дохід рахується як кількість активних покупок × ціна курсу.",
+        "ℹ️ Ручна видача доступу не враховується як продаж. Дохід рахується лише за підтвердженими оплатами.",
         parse_mode="HTML",
         reply_markup=admin_menu(),
     )

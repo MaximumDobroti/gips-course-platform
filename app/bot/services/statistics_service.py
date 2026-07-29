@@ -6,6 +6,7 @@ from app.models.course import Course
 from app.models.lesson import Lesson
 from app.models.lesson_progress import LessonProgress
 from app.models.purchase import Purchase
+from app.models.payment_request import PaymentRequest
 from app.models.review import Review
 from app.models.user import User
 
@@ -15,10 +16,13 @@ def get_platform_statistics(course_id: int, course_price: int | None = None) -> 
     try:
         users_total = db.query(User).count()
         active_purchases = db.query(Purchase).filter(Purchase.status == "active").count()
-
-        course = db.query(Course).filter(Course.id == course_id).first()
-        effective_price = int(course_price) if course_price is not None else (int(course.price) if course else 0)
-        income = active_purchases * effective_price
+        paid_sales = db.query(PaymentRequest).filter(PaymentRequest.status == "paid").count()
+        income = (
+            db.query(func.coalesce(func.sum(PaymentRequest.amount), 0))
+            .filter(PaymentRequest.status == "paid")
+            .scalar()
+        )
+        payments_to_review = db.query(PaymentRequest).filter(PaymentRequest.status == "submitted").count()
 
         lesson_ids = [row[0] for row in db.query(Lesson.id).filter(Lesson.course_id == course_id, Lesson.is_active.is_(True)).all()]
         total_lessons = len(lesson_ids)
@@ -44,7 +48,9 @@ def get_platform_statistics(course_id: int, course_price: int | None = None) -> 
         return {
             "users_total": users_total,
             "active_purchases": active_purchases,
-            "income": income,
+            "paid_sales": paid_sales,
+            "income": int(income or 0),
+            "payments_to_review": payments_to_review,
             "started": started,
             "completed": completed,
             "average_progress": average_progress,

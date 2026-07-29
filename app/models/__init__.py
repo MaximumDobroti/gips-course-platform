@@ -3,7 +3,8 @@ from app.models.course import Course
 from app.models.lesson import Lesson
 from app.models.lesson_progress import LessonProgress
 from app.models.purchase import Purchase
+from app.models.payment_request import PaymentRequest
 from app.models.review import Review
 from app.models.user import User
 
-__all__ = ["Announcement", "Course", "Lesson", "LessonProgress", "Purchase", "Review", "User"]
+__all__ = ["Announcement", "Course", "Lesson", "LessonProgress", "Purchase", "PaymentRequest", "Review", "User"]
